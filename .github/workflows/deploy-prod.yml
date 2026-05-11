@@ -1,0 +1,59 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER_PROD }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT_PROD }}
+
+      - name: Setup Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker authentication
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build image
+        run: |
+          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_PROD }}/${{ vars.ARTIFACT_REGISTRY_REPOSITORY_PROD }}/${{ vars.ARTIFACT_IMAGE_NAME_FRONTEND }}:${{ github.sha }}"
+          docker build \
+            --build-arg VITE_APP_ENV=production \
+            --build-arg VITE_GIT_SHA=${{ github.sha }} \
+            --tag "$IMAGE" \
+            frontend
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Push image
+        run: docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE_PROD }}" \
+            --image "$IMAGE" \
+            --project "${{ vars.GCP_PROJECT_ID_PROD }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --quiet
