@@ -1,165 +1,210 @@
+import type { User } from 'firebase/auth';
 import {
-  Activity,
-  ArrowRight,
-  BadgeCheck,
-  Cloud,
-  ExternalLink,
-  GitBranch,
-  GitMerge,
-  Rocket,
+  Building2,
+  ChevronLeft,
+  ChevronRight,
+  CircleUserRound,
+  Loader2,
+  LogIn,
+  LogOut,
   ShieldCheck,
+  Sparkles,
+  Users,
 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthContext';
 
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
 const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
 
-const environments = [
-  {
-    name: 'Development',
-    branch: 'develop',
-    project: 'withdev-dev',
-    service: 'withdev-dev',
-    registry: 'withdev-dev/frontend',
-    cadence: 'Push deploy',
-    tone: 'emerald',
-  },
-  {
-    name: 'Production',
-    branch: 'main',
-    project: 'withdev-prod',
-    service: 'withdev-prod',
-    registry: 'withdev-prod/frontend',
-    cadence: 'Merge deploy',
-    tone: 'amber',
-  },
-];
+type TeamRole = 'owner' | 'admin' | 'member';
 
-const checks = [
-  'GitHub Actions',
-  'Workload Identity Federation',
-  'Artifact Registry',
-  'Cloud Run',
-];
+type UserTeamSummary = {
+  team_id: string;
+  name: string;
+  role: TeamRole;
+  member_count: number;
+};
 
 function shortSha(value: string) {
   return value === 'local' ? value : value.slice(0, 7);
 }
 
-function App() {
+function getDisplayName(user: User) {
+  return user.displayName || user.email?.split('@')[0] || 'User';
+}
+
+function createDefaultTeam(user: User): UserTeamSummary {
+  const displayName = getDisplayName(user);
+  return {
+    team_id: `default_${user.uid}`,
+    name: `${displayName} のチーム`,
+    role: 'owner',
+    member_count: 1,
+  };
+}
+
+function LoadingScreen() {
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">WithDev</p>
-          <h1>Delivery Board</h1>
-        </div>
-        <a
-          className="icon-link"
-          href="https://github.com/mocococococo/WithDev"
-          rel="noreferrer"
-          target="_blank"
-          aria-label="Open GitHub repository"
-        >
-          <ExternalLink size={18} />
-          GitHub
-        </a>
-      </header>
+    <main className="auth-layout">
+      <div className="loading-panel" aria-live="polite">
+        <Loader2 className="spin" size={28} />
+      </div>
+    </main>
+  );
+}
 
-      <section className="status-band" aria-label="Current build">
-        <div>
-          <span className="status-icon">
-            <Activity size={20} />
-          </span>
-          <div>
-            <p className="label">Runtime</p>
-            <strong>{appEnv}</strong>
-          </div>
-        </div>
-        <div>
-          <span className="status-icon">
-            <GitBranch size={20} />
-          </span>
-          <div>
-            <p className="label">Revision</p>
-            <strong>{shortSha(gitSha)}</strong>
-          </div>
-        </div>
-        <div>
-          <span className="status-icon">
-            <ShieldCheck size={20} />
-          </span>
-          <div>
-            <p className="label">Auth</p>
-            <strong>Keyless</strong>
-          </div>
-        </div>
-      </section>
+function LoginScreen() {
+  const { error, loginWithGoogle } = useAuth();
 
-      <section className="environment-grid" aria-label="Deployment environments">
-        {environments.map((environment) => (
-          <article className={`environment-card ${environment.tone}`} key={environment.name}>
-            <div className="card-title">
-              <span>
-                <Cloud size={20} />
-              </span>
-              <div>
-                <p className="label">{environment.cadence}</p>
-                <h2>{environment.name}</h2>
-              </div>
-            </div>
-            <dl className="metadata">
-              <div>
-                <dt>Branch</dt>
-                <dd>{environment.branch}</dd>
-              </div>
-              <div>
-                <dt>Project</dt>
-                <dd>{environment.project}</dd>
-              </div>
-              <div>
-                <dt>Cloud Run</dt>
-                <dd>{environment.service}</dd>
-              </div>
-              <div>
-                <dt>Image</dt>
-                <dd>{environment.registry}</dd>
-              </div>
-            </dl>
-          </article>
-        ))}
-      </section>
-
-      <section className="workflow-row" aria-label="Release workflow">
-        <div className="flow-item">
-          <GitBranch size={22} />
-          <span>develop</span>
+  return (
+    <main className="auth-layout">
+      <section className="login-hero" aria-labelledby="login-title">
+        <div className="brand-mark">
+          <Sparkles size={28} />
         </div>
-        <ArrowRight size={18} />
-        <div className="flow-item">
-          <Rocket size={22} />
-          <span>withdev-dev</span>
-        </div>
-        <ArrowRight size={18} />
-        <div className="flow-item">
-          <GitMerge size={22} />
-          <span>main</span>
-        </div>
-        <ArrowRight size={18} />
-        <div className="flow-item">
-          <BadgeCheck size={22} />
-          <span>withdev-prod</span>
-        </div>
-      </section>
-
-      <section className="check-strip" aria-label="Platform checks">
-        {checks.map((check) => (
-          <span key={check}>
-            <BadgeCheck size={16} />
-            {check}
-          </span>
-        ))}
+        <p className="eyebrow">WithDev</p>
+        <h1 id="login-title">チームで始める</h1>
+        <button className="primary-button" type="button" onClick={() => void loginWithGoogle()}>
+          <LogIn size={20} />
+          Googleでログイン
+        </button>
+        {error && <p className="error-text">{getReadableAuthError(error)}</p>}
       </section>
     </main>
+  );
+}
+
+type TeamCardProps = {
+  team: UserTeamSummary;
+  onOpen: () => void;
+};
+
+function TeamCard({ team, onOpen }: TeamCardProps) {
+  return (
+    <button className="team-card" type="button" onClick={onOpen}>
+      <span className="team-icon">
+        <Users size={24} />
+      </span>
+      <span className="team-main">
+        <strong>{team.name}</strong>
+        <span>{team.team_id}</span>
+      </span>
+      <span className="team-meta">
+        <span>{team.role}</span>
+        <span>{team.member_count} member</span>
+      </span>
+      <ChevronRight size={22} />
+    </button>
+  );
+}
+
+type UserAvatarProps = {
+  user: User;
+};
+
+function UserAvatar({ user }: UserAvatarProps) {
+  if (user.photoURL) {
+    return <img className="avatar" src={user.photoURL} alt={getDisplayName(user)} />;
+  }
+
+  return (
+    <span className="avatar fallback" aria-label={getDisplayName(user)}>
+      <CircleUserRound size={24} />
+    </span>
+  );
+}
+
+function TeamHome({ team, onBack }: { team: UserTeamSummary; onBack: () => void }) {
+  return (
+    <main className="app-layout">
+      <button className="quiet-button" type="button" onClick={onBack}>
+        <ChevronLeft size={18} />
+        チーム選択
+      </button>
+      <section className="workspace-panel">
+        <span className="workspace-icon">
+          <Building2 size={28} />
+        </span>
+        <div>
+          <p className="eyebrow">Team</p>
+          <h1>{team.name}</h1>
+          <p className="workspace-id">{team.team_id}</p>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function TeamSelectionScreen() {
+  const { currentUser, logout } = useAuth();
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  const teams = useMemo(() => (currentUser ? [createDefaultTeam(currentUser)] : []), [currentUser]);
+  const selectedTeam = teams.find((team) => team.team_id === selectedTeamId) ?? null;
+
+  if (!currentUser) {
+    return null;
+  }
+
+  if (selectedTeam) {
+    return <TeamHome team={selectedTeam} onBack={() => setSelectedTeamId(null)} />;
+  }
+
+  return (
+    <main className="app-layout">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">WithDev</p>
+          <h1>チームを選択</h1>
+        </div>
+        <div className="account-area">
+          <UserAvatar user={currentUser} />
+          <div className="account-copy">
+            <strong>{getDisplayName(currentUser)}</strong>
+            <span>{currentUser.email}</span>
+          </div>
+          <button className="icon-button" type="button" onClick={() => void logout()} aria-label="ログアウト">
+            <LogOut size={20} />
+          </button>
+        </div>
+      </header>
+
+      <section className="team-list" aria-label="所属チーム">
+        {teams.map((team) => (
+          <TeamCard key={team.team_id} team={team} onOpen={() => setSelectedTeamId(team.team_id)} />
+        ))}
+      </section>
+
+      <footer className="build-footer" aria-label="Build information">
+        <span>
+          <ShieldCheck size={16} />
+          {appEnv}
+        </span>
+        <span>{shortSha(gitSha)}</span>
+      </footer>
+    </main>
+  );
+}
+
+function WithDevApp() {
+  const { currentUser, loading } = useAuth();
+
+  if (loading) {
+    return <LoadingScreen />;
+  }
+
+  if (!currentUser) {
+    return <LoginScreen />;
+  }
+
+  return <TeamSelectionScreen />;
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <WithDevApp />
+    </AuthProvider>
   );
 }
 
