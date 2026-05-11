@@ -60,10 +60,12 @@ function LoginScreen() {
   return (
     <main className="auth-layout">
       <section className="login-hero" aria-labelledby="login-title">
-        <div className="brand-mark">
-          <Sparkles size={28} />
+        <div className="login-brand" aria-label="WithDev">
+          <span className="brand-mark">
+            <Sparkles size={24} />
+          </span>
+          <span>WithDev</span>
         </div>
-        <p className="eyebrow">WithDev</p>
         <h1 id="login-title">チームで始める</h1>
         <button className="primary-button" type="button" onClick={() => void loginWithGoogle()}>
           <LogIn size={20} />

@@ -83,6 +83,16 @@ h2 {
   padding: 34px;
 }
 
+.login-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  color: #202124;
+  font-size: 2.35rem;
+  font-weight: 900;
+}
+
 .loading-panel {
   display: flex;
   align-items: center;
@@ -106,13 +116,12 @@ h2 {
 }
 
 .brand-mark {
-  margin-bottom: 22px;
   background: #e9ecfb;
   color: #3d5cc8;
 }
 
 .login-hero h1 {
-  margin-bottom: 26px;
+  margin-bottom: 28px;
 }
 
 .primary-button,
