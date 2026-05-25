@@ -76,6 +76,8 @@ require_env VITE_FIREBASE_MESSAGING_SENDER_ID
 require_env VITE_FIREBASE_APP_ID
 
 GIT_SHA="$(git rev-parse --short=12 HEAD)"
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format 'value(projectNumber)')"
+DETERMINISTIC_SERVICE_URL="https://${CLOUD_RUN_SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REGISTRY_REPOSITORY}/${ARTIFACT_IMAGE_NAME}:${GIT_SHA}"
 
 info "Deploying frontend only to development."
@@ -109,11 +111,5 @@ gcloud run deploy "$CLOUD_RUN_SERVICE" \
   --port 8080 \
   --quiet
 
-SERVICE_URL="$(gcloud run services describe "$CLOUD_RUN_SERVICE" \
-  --project "$PROJECT_ID" \
-  --region "$REGION" \
-  --platform managed \
-  --format 'value(status.url)')"
-
 info "Development frontend deployment completed."
-info "URL: ${SERVICE_URL}"
+info "URL: ${DETERMINISTIC_SERVICE_URL}"
