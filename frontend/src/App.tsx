@@ -5,16 +5,19 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleUserRound,
+  ClipboardList,
   Clock3,
   FileText,
   Loader2,
   LogIn,
   LogOut,
+  Map,
   MessageSquareText,
   PlayCircle,
   Plus,
   ShieldCheck,
   Sparkles,
+  UserCheck,
   Users,
   Video,
 } from 'lucide-react';
@@ -25,10 +28,14 @@ import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthCont
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
 const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
 const meetingsStoragePrefix = 'withdev.meetings.v1';
+const tasksStoragePrefix = 'withdev.tasks.v1';
 
 type TeamRole = 'owner' | 'admin' | 'member';
 type MeetingStatus = 'active' | 'ended';
 type MeetingFilter = 'all' | MeetingStatus;
+type TaskStatus = 'todo' | 'doing' | 'done';
+type TaskFilter = 'all' | TaskStatus;
+type TeamView = 'meetings' | 'tasks';
 
 type UserTeamSummary = {
   team_id: string;
@@ -50,6 +57,32 @@ type MeetingSummary = {
   minutes: string | null;
 };
 
+type TeamTask = {
+  id: string;
+  team_id: string;
+  title: string;
+  status: TaskStatus;
+  assignee_uid: string | null;
+  assignee_name: string | null;
+  source_meeting_id: string | null;
+  due_date: number | null;
+  created_at: number;
+  updated_at: number;
+  roadmap: TaskRoadmap;
+};
+
+type RoadmapStep = {
+  id: string;
+  title: string;
+  description: string;
+  status: TaskStatus;
+};
+
+type TaskRoadmap = {
+  overview: string;
+  steps: RoadmapStep[];
+};
+
 const roleLabels: Record<TeamRole, string> = {
   owner: 'オーナー',
   admin: '管理者',
@@ -60,6 +93,19 @@ const filterLabels: Record<MeetingFilter, string> = {
   all: 'すべて',
   active: '進行中',
   ended: '終了済み',
+};
+
+const taskStatusLabels: Record<TaskStatus, string> = {
+  todo: '未着手',
+  doing: '進行中',
+  done: '完了',
+};
+
+const taskFilterLabels: Record<TaskFilter, string> = {
+  all: 'すべて',
+  todo: '未着手',
+  doing: '進行中',
+  done: '完了',
 };
 
 function shortSha(value: string) {
@@ -84,12 +130,48 @@ function getMeetingsStorageKey(userId: string) {
   return `${meetingsStoragePrefix}.${userId}`;
 }
 
+function getTasksStorageKey(userId: string) {
+  return `${tasksStoragePrefix}.${userId}`;
+}
+
 function createMeetingId() {
   return `meeting_${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
 }
 
 function createPlaceholderMinutes(title: string, initialTheme: string): string {
   return `${title}では「${initialTheme}」について話し合いました。現時点ではバックエンドから議事録を取得していないため、この文章はフロントエンドだけで動作確認するための仮の議事録です。実際の実装では、ミーティング終了後に生成または保存された議事録本文をバックエンドから取得し、この領域にそのまま表示します。議論の流れ、参加者の発言、合意に至った背景、次に確認したい論点などをひとつの文章として読みやすく表示できることを確認するため、少し長めの本文にしています。`;
+}
+
+function createPlaceholderRoadmap(taskTitle: string): TaskRoadmap {
+  return {
+    overview: `「${taskTitle}」を進めるための仮ロードマップです。今はフロントエンドだけで表示確認するための内容ですが、将来的にはバックエンドからタスクごとのロードマップを取得して差し替えます。`,
+    steps: [
+      {
+        id: 'step_understand',
+        title: '目的を確認する',
+        description: 'このタスクで達成したい状態と、完了と判断できる条件を整理します。',
+        status: 'done',
+      },
+      {
+        id: 'step_collect',
+        title: '必要な情報を集める',
+        description: '関連するミーティング、議事録、チーム内の前提を確認します。',
+        status: 'doing',
+      },
+      {
+        id: 'step_execute',
+        title: '作業を実行する',
+        description: '整理した方針に沿ってタスクを進め、必要に応じて途中経過を共有します。',
+        status: 'todo',
+      },
+      {
+        id: 'step_share',
+        title: '結果を共有する',
+        description: '完了した内容、残った論点、次に必要なアクションをチームに共有します。',
+        status: 'todo',
+      },
+    ],
+  };
 }
 
 function createSeedMeetings(teamId: string): MeetingSummary[] {
@@ -193,6 +275,162 @@ function saveMeetings(userId: string, meetings: MeetingSummary[]) {
   window.localStorage.setItem(getMeetingsStorageKey(userId), JSON.stringify(meetings));
 }
 
+function parseRoadmapStep(value: unknown): RoadmapStep | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const step = value as Partial<RoadmapStep>;
+  if (
+    typeof step.id !== 'string' ||
+    typeof step.title !== 'string' ||
+    typeof step.description !== 'string' ||
+    (step.status !== 'todo' && step.status !== 'doing' && step.status !== 'done')
+  ) {
+    return null;
+  }
+
+  return {
+    id: step.id,
+    title: step.title,
+    description: step.description,
+    status: step.status,
+  };
+}
+
+function parseTaskRoadmap(value: unknown, taskTitle: string): TaskRoadmap {
+  if (!value || typeof value !== 'object') return createPlaceholderRoadmap(taskTitle);
+
+  const roadmap = value as Partial<TaskRoadmap>;
+  if (typeof roadmap.overview !== 'string' || !Array.isArray(roadmap.steps)) {
+    return createPlaceholderRoadmap(taskTitle);
+  }
+
+  const steps = roadmap.steps
+    .map(parseRoadmapStep)
+    .filter((step): step is RoadmapStep => step !== null);
+
+  return steps.length > 0
+    ? { overview: roadmap.overview, steps }
+    : createPlaceholderRoadmap(taskTitle);
+}
+
+function createSeedTasks(teamId: string, user: User): TeamTask[] {
+  const now = Date.now();
+  const displayName = getDisplayName(user);
+
+  return [
+    {
+      id: 'demo_task_prepare_topics',
+      team_id: teamId,
+      title: '次回ミーティングで確認する論点を整理する',
+      status: 'doing',
+      assignee_uid: user.uid,
+      assignee_name: displayName,
+      source_meeting_id: 'demo_product_sync',
+      due_date: now + 1000 * 60 * 60 * 24 * 2,
+      created_at: now - 1000 * 60 * 60 * 3,
+      updated_at: now - 1000 * 60 * 24,
+      roadmap: createPlaceholderRoadmap('次回ミーティングで確認する論点を整理する'),
+    },
+    {
+      id: 'demo_task_review_minutes',
+      team_id: teamId,
+      title: '週次ふりかえりの議事録を確認する',
+      status: 'todo',
+      assignee_uid: user.uid,
+      assignee_name: displayName,
+      source_meeting_id: 'demo_weekly_review',
+      due_date: now + 1000 * 60 * 60 * 24 * 4,
+      created_at: now - 1000 * 60 * 60 * 20,
+      updated_at: now - 1000 * 60 * 60 * 20,
+      roadmap: createPlaceholderRoadmap('週次ふりかえりの議事録を確認する'),
+    },
+    {
+      id: 'demo_task_schedule_next',
+      team_id: teamId,
+      title: '次回ミーティング候補日を共有する',
+      status: 'todo',
+      assignee_uid: null,
+      assignee_name: null,
+      source_meeting_id: null,
+      due_date: now + 1000 * 60 * 60 * 24 * 7,
+      created_at: now - 1000 * 60 * 60 * 5,
+      updated_at: now - 1000 * 60 * 60 * 5,
+      roadmap: createPlaceholderRoadmap('次回ミーティング候補日を共有する'),
+    },
+    {
+      id: 'demo_task_done_summary',
+      team_id: teamId,
+      title: '初期デプロイ結果をチームに共有する',
+      status: 'done',
+      assignee_uid: user.uid,
+      assignee_name: displayName,
+      source_meeting_id: null,
+      due_date: now - 1000 * 60 * 60 * 24,
+      created_at: now - 1000 * 60 * 60 * 30,
+      updated_at: now - 1000 * 60 * 60 * 2,
+      roadmap: createPlaceholderRoadmap('初期デプロイ結果をチームに共有する'),
+    },
+  ];
+}
+
+function parseTeamTask(value: unknown): TeamTask | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const task = value as Partial<TeamTask>;
+  if (
+    typeof task.id !== 'string' ||
+    typeof task.team_id !== 'string' ||
+    typeof task.title !== 'string' ||
+    (task.status !== 'todo' && task.status !== 'doing' && task.status !== 'done') ||
+    (typeof task.assignee_uid !== 'string' && task.assignee_uid !== null) ||
+    (typeof task.assignee_name !== 'string' && task.assignee_name !== null) ||
+    (typeof task.source_meeting_id !== 'string' && task.source_meeting_id !== null) ||
+    (typeof task.due_date !== 'number' && task.due_date !== null) ||
+    typeof task.created_at !== 'number' ||
+    typeof task.updated_at !== 'number'
+  ) {
+    return null;
+  }
+
+  return {
+    id: task.id,
+    team_id: task.team_id,
+    title: task.title,
+    status: task.status,
+    assignee_uid: task.assignee_uid,
+    assignee_name: task.assignee_name,
+    source_meeting_id: task.source_meeting_id,
+    due_date: task.due_date,
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    roadmap: parseTaskRoadmap(task.roadmap, task.title),
+  };
+}
+
+function loadTasks(user: User, teamId: string) {
+  if (typeof window === 'undefined') return createSeedTasks(teamId, user);
+
+  try {
+    const rawValue = window.localStorage.getItem(getTasksStorageKey(user.uid));
+    if (!rawValue) return createSeedTasks(teamId, user);
+
+    const parsedValue: unknown = JSON.parse(rawValue);
+    if (!Array.isArray(parsedValue)) return createSeedTasks(teamId, user);
+
+    const tasks = parsedValue
+      .map(parseTeamTask)
+      .filter((task): task is TeamTask => task !== null);
+    return tasks.length > 0 ? tasks : createSeedTasks(teamId, user);
+  } catch {
+    return createSeedTasks(teamId, user);
+  }
+}
+
+function saveTasks(userId: string, tasks: TeamTask[]) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(getTasksStorageKey(userId), JSON.stringify(tasks));
+}
+
 function formatDateTime(value: number | null) {
   if (!value) return '-';
 
@@ -201,6 +439,15 @@ function formatDateTime(value: number | null) {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function formatDate(value: number | null) {
+  if (!value) return '期限なし';
+
+  return new Intl.DateTimeFormat('ja-JP', {
+    month: '2-digit',
+    day: '2-digit',
   }).format(new Date(value));
 }
 
@@ -430,13 +677,112 @@ function MeetingCard({ meeting, onOpen }: MeetingCardProps) {
   );
 }
 
+function sortTasks(tasks: TeamTask[]) {
+  const statusOrder: Record<TaskStatus, number> = {
+    doing: 0,
+    todo: 1,
+    done: 2,
+  };
+
+  return [...tasks].sort((a, b) => {
+    const statusDiff = statusOrder[a.status] - statusOrder[b.status];
+    if (statusDiff !== 0) return statusDiff;
+
+    const aDueDate = a.due_date ?? Number.MAX_SAFE_INTEGER;
+    const bDueDate = b.due_date ?? Number.MAX_SAFE_INTEGER;
+    if (aDueDate !== bDueDate) return aDueDate - bDueDate;
+
+    return b.updated_at - a.updated_at;
+  });
+}
+
+function TaskStatusBadge({ status }: { status: TaskStatus }) {
+  return <span className={`task-status-badge ${status}`}>{taskStatusLabels[status]}</span>;
+}
+
+type TaskCardProps = {
+  task: TeamTask;
+  compact?: boolean;
+  onOpen: () => void;
+};
+
+function TaskCard({ task, compact = false, onOpen }: TaskCardProps) {
+  return (
+    <button className={compact ? 'task-card compact' : 'task-card'} type="button" onClick={onOpen}>
+      <div className="task-card-header">
+        <TaskStatusBadge status={task.status} />
+        <span>{formatDate(task.due_date)}</span>
+      </div>
+      <h3>{task.title}</h3>
+      <div className="task-card-meta">
+        <span>{task.assignee_name ?? '未担当'}</span>
+        {task.source_meeting_id && <span>{task.source_meeting_id}</span>}
+      </div>
+    </button>
+  );
+}
+
+type TaskSidebarProps = {
+  user: User;
+  tasks: TeamTask[];
+  onOpenTasks: () => void;
+  onOpenTask: (taskId: string) => void;
+};
+
+function TaskSidebar({ user, tasks, onOpenTasks, onOpenTask }: TaskSidebarProps) {
+  const myTasks = useMemo(
+    () => sortTasks(tasks.filter((task) => task.assignee_uid === user.uid)),
+    [tasks, user.uid],
+  );
+
+  return (
+    <aside className="task-sidebar" aria-label="チームタスク">
+      <button className="task-nav-button" type="button" onClick={onOpenTasks}>
+        <span className="task-nav-icon">
+          <ClipboardList size={22} />
+        </span>
+        <span className="task-nav-copy">
+          <strong>全体タスク</strong>
+          <span>{tasks.length} 件のチームタスク</span>
+        </span>
+        <ChevronRight size={20} />
+      </button>
+
+      <section className="my-task-panel">
+        <div className="section-title-row">
+          <span className="section-icon">
+            <UserCheck size={22} />
+          </span>
+          <div>
+            <p className="eyebrow">My tasks</p>
+            <h2>自分の担当タスク</h2>
+          </div>
+        </div>
+
+        {myTasks.length > 0 ? (
+          <div className="task-list compact">
+            {myTasks.map((task) => (
+              <TaskCard key={task.id} task={task} compact onOpen={() => onOpenTask(task.id)} />
+            ))}
+          </div>
+        ) : (
+          <p className="task-empty">担当タスクはありません。</p>
+        )}
+      </section>
+    </aside>
+  );
+}
+
 type MeetingListScreenProps = {
   user: User;
   team: UserTeamSummary;
   meetings: MeetingSummary[];
+  tasks: TeamTask[];
   onBackToTeams: () => void;
   onCreateMeeting: (title: string, initialTheme: string) => void;
   onOpenMeeting: (meetingId: string) => void;
+  onOpenTasks: () => void;
+  onOpenTask: (taskId: string) => void;
   onLogout: () => void;
 };
 
@@ -444,9 +790,12 @@ function MeetingListScreen({
   user,
   team,
   meetings,
+  tasks,
   onBackToTeams,
   onCreateMeeting,
   onOpenMeeting,
+  onOpenTasks,
+  onOpenTask,
   onLogout,
 }: MeetingListScreenProps) {
   const [filter, setFilter] = useState<MeetingFilter>('all');
@@ -477,58 +826,238 @@ function MeetingListScreen({
         <AccountMenu user={user} onLogout={onLogout} />
       </header>
 
+      <div className="team-content">
+        <div className="meeting-column">
+          <section className="toolbar">
+            <div>
+              <h2>ミーティング一覧</h2>
+              <p>{meetings.length} 件のミーティングがあります。</p>
+            </div>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => setShowCreateForm((value) => !value)}
+            >
+              <Plus size={18} />
+              ミーティングを開始
+            </button>
+          </section>
+
+          {showCreateForm && (
+            <MeetingCreateForm
+              onCreate={handleCreateMeeting}
+              onCancel={() => setShowCreateForm(false)}
+            />
+          )}
+
+          <section className="filter-bar" aria-label="ミーティングの絞り込み">
+            {(Object.keys(filterLabels) as MeetingFilter[]).map((key) => (
+              <button
+                key={key}
+                className={filter === key ? 'filter-button active' : 'filter-button'}
+                type="button"
+                onClick={() => setFilter(key)}
+              >
+                {filterLabels[key]}
+              </button>
+            ))}
+          </section>
+
+          {visibleMeetings.length > 0 ? (
+            <section className="meeting-list" aria-label="ミーティング一覧">
+              {visibleMeetings.map((meeting) => (
+                <MeetingCard
+                  key={meeting.id}
+                  meeting={meeting}
+                  onOpen={() => onOpenMeeting(meeting.id)}
+                />
+              ))}
+            </section>
+          ) : (
+            <section className="empty-state">
+              <CalendarDays size={42} />
+              <h2>ミーティングがありません</h2>
+              <p>新しいミーティングを開始できます。</p>
+            </section>
+          )}
+        </div>
+
+        <TaskSidebar user={user} tasks={tasks} onOpenTasks={onOpenTasks} onOpenTask={onOpenTask} />
+      </div>
+
+      <BuildFooter />
+    </main>
+  );
+}
+
+type TeamTaskScreenProps = {
+  user: User;
+  team: UserTeamSummary;
+  tasks: TeamTask[];
+  onBackToMeetings: () => void;
+  onOpenTask: (taskId: string) => void;
+  onLogout: () => void;
+};
+
+function TeamTaskScreen({ user, team, tasks, onBackToMeetings, onOpenTask, onLogout }: TeamTaskScreenProps) {
+  const [filter, setFilter] = useState<TaskFilter>('all');
+  const visibleTasks = useMemo(() => {
+    return sortTasks(tasks.filter((task) => filter === 'all' || task.status === filter));
+  }, [filter, tasks]);
+
+  return (
+    <main className="app-layout">
+      <header className="app-header">
+        <div>
+          <button className="quiet-button" type="button" onClick={onBackToMeetings}>
+            <ArrowLeft size={18} />
+            ミーティング一覧へ
+          </button>
+          <p className="eyebrow">Team tasks</p>
+          <h1>全体タスク</h1>
+          <p className="subtle-copy">{team.name}</p>
+        </div>
+        <AccountMenu user={user} onLogout={onLogout} />
+      </header>
+
       <section className="toolbar">
         <div>
-          <h2>ミーティング一覧</h2>
-          <p>{meetings.length} 件のミーティングがあります。</p>
+          <h2>チーム全体のタスク</h2>
+          <p>{tasks.length} 件のタスクがあります。</p>
         </div>
-        <button
-          className="primary-button"
-          type="button"
-          onClick={() => setShowCreateForm((value) => !value)}
-        >
-          <Plus size={18} />
-          ミーティングを開始
-        </button>
       </section>
 
-      {showCreateForm && (
-        <MeetingCreateForm
-          onCreate={handleCreateMeeting}
-          onCancel={() => setShowCreateForm(false)}
-        />
-      )}
-
-      <section className="filter-bar" aria-label="ミーティングの絞り込み">
-        {(Object.keys(filterLabels) as MeetingFilter[]).map((key) => (
+      <section className="filter-bar" aria-label="タスクの絞り込み">
+        {(Object.keys(taskFilterLabels) as TaskFilter[]).map((key) => (
           <button
             key={key}
             className={filter === key ? 'filter-button active' : 'filter-button'}
             type="button"
             onClick={() => setFilter(key)}
           >
-            {filterLabels[key]}
+            {taskFilterLabels[key]}
           </button>
         ))}
       </section>
 
-      {visibleMeetings.length > 0 ? (
-        <section className="meeting-list" aria-label="ミーティング一覧">
-          {visibleMeetings.map((meeting) => (
-            <MeetingCard
-              key={meeting.id}
-              meeting={meeting}
-              onOpen={() => onOpenMeeting(meeting.id)}
-            />
+      {visibleTasks.length > 0 ? (
+        <section className="task-list" aria-label="チーム全体のタスク一覧">
+          {visibleTasks.map((task) => (
+            <TaskCard key={task.id} task={task} onOpen={() => onOpenTask(task.id)} />
           ))}
         </section>
       ) : (
         <section className="empty-state">
-          <CalendarDays size={42} />
-          <h2>ミーティングがありません</h2>
-          <p>新しいミーティングを開始できます。</p>
+          <ClipboardList size={42} />
+          <h2>タスクがありません</h2>
+          <p>条件に一致するチームタスクはありません。</p>
         </section>
       )}
+
+      <BuildFooter />
+    </main>
+  );
+}
+
+type TaskDetailScreenProps = {
+  user: User;
+  team: UserTeamSummary;
+  task: TeamTask;
+  onBack: () => void;
+  onLogout: () => void;
+};
+
+function TaskDetailScreen({ user, team, task, onBack, onLogout }: TaskDetailScreenProps) {
+  const completedSteps = task.roadmap.steps.filter((step) => step.status === 'done').length;
+
+  return (
+    <main className="app-layout">
+      <header className="app-header">
+        <div>
+          <button className="quiet-button" type="button" onClick={onBack}>
+            <ArrowLeft size={18} />
+            タスク一覧へ
+          </button>
+          <p className="eyebrow">Task roadmap</p>
+          <h1>{task.title}</h1>
+          <p className="subtle-copy">{team.name}</p>
+        </div>
+        <AccountMenu user={user} onLogout={onLogout} />
+      </header>
+
+      <section className="task-detail">
+        <div className="task-detail-header">
+          <span className="roadmap-icon">
+            <Map size={26} />
+          </span>
+          <div>
+            <p className="eyebrow">Roadmap</p>
+            <h2>完了までの道筋</h2>
+            <p>{task.roadmap.overview}</p>
+          </div>
+        </div>
+
+        <div className="task-detail-grid">
+          <div>
+            <span>ステータス</span>
+            <strong>
+              <TaskStatusBadge status={task.status} />
+            </strong>
+          </div>
+          <div>
+            <span>担当者</span>
+            <strong>{task.assignee_name ?? '未担当'}</strong>
+          </div>
+          <div>
+            <span>期限</span>
+            <strong>{formatDate(task.due_date)}</strong>
+          </div>
+          <div>
+            <span>元ミーティング</span>
+            <strong>{task.source_meeting_id ?? '-'}</strong>
+          </div>
+          <div>
+            <span>作成日時</span>
+            <strong>{formatDateTime(task.created_at)}</strong>
+          </div>
+          <div>
+            <span>最終更新</span>
+            <strong>{formatDateTime(task.updated_at)}</strong>
+          </div>
+        </div>
+
+        <section className="roadmap-panel">
+          <div className="roadmap-panel-header">
+            <div className="section-title-row">
+              <span className="section-icon">
+                <CheckCircle2 size={22} />
+              </span>
+              <div>
+                <p className="eyebrow">Steps</p>
+                <h2>進め方</h2>
+              </div>
+            </div>
+            <span className="roadmap-progress">
+              {completedSteps}/{task.roadmap.steps.length}
+            </span>
+          </div>
+
+          <div className="roadmap-step-list">
+            {task.roadmap.steps.map((step, index) => (
+              <article className={`roadmap-step ${step.status}`} key={step.id}>
+                <span className="roadmap-step-index">{index + 1}</span>
+                <div>
+                  <div className="roadmap-step-title">
+                    <h3>{step.title}</h3>
+                    <TaskStatusBadge status={step.status} />
+                  </div>
+                  <p>{step.description}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      </section>
 
       <BuildFooter />
     </main>
@@ -687,24 +1216,38 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const defaultTeamId = teams[0].team_id;
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedTeamView, setSelectedTeamView] = useState<TeamView>('meetings');
   const [meetings, setMeetings] = useState<MeetingSummary[]>(() =>
     loadMeetings(currentUser.uid, defaultTeamId),
   );
+  const [tasks, setTasks] = useState<TeamTask[]>(() => loadTasks(currentUser, defaultTeamId));
 
   useEffect(() => {
     setSelectedTeamId(null);
     setSelectedMeetingId(null);
+    setSelectedTaskId(null);
+    setSelectedTeamView('meetings');
     setMeetings(loadMeetings(currentUser.uid, defaultTeamId));
-  }, [currentUser.uid, defaultTeamId]);
+    setTasks(loadTasks(currentUser, defaultTeamId));
+  }, [currentUser, currentUser.uid, defaultTeamId]);
 
   useEffect(() => {
     saveMeetings(currentUser.uid, meetings);
   }, [currentUser.uid, meetings]);
 
+  useEffect(() => {
+    saveTasks(currentUser.uid, tasks);
+  }, [currentUser.uid, tasks]);
+
   const selectedTeam = teams.find((team) => team.team_id === selectedTeamId) ?? null;
   const selectedMeeting = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null;
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
   const teamMeetings = selectedTeam
     ? meetings.filter((meeting) => meeting.team_id === selectedTeam.team_id)
+    : [];
+  const teamTasks = selectedTeam
+    ? tasks.filter((task) => task.team_id === selectedTeam.team_id)
     : [];
 
   const handleCreateMeeting = (title: string, initialTheme: string) => {
@@ -749,6 +1292,18 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     void logout();
   };
 
+  if (selectedTeam && selectedTask && selectedTask.team_id === selectedTeam.team_id) {
+    return (
+      <TaskDetailScreen
+        user={currentUser}
+        team={selectedTeam}
+        task={selectedTask}
+        onBack={() => setSelectedTaskId(null)}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   if (selectedTeam && selectedMeeting) {
     return (
       <MeetingRoomScreen
@@ -760,18 +1315,45 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     );
   }
 
+  if (selectedTeam && selectedTeamView === 'tasks') {
+    return (
+      <TeamTaskScreen
+        user={currentUser}
+        team={selectedTeam}
+        tasks={teamTasks}
+        onBackToMeetings={() => setSelectedTeamView('meetings')}
+        onOpenTask={(taskId) => {
+          setSelectedMeetingId(null);
+          setSelectedTaskId(taskId);
+        }}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   if (selectedTeam) {
     return (
       <MeetingListScreen
         user={currentUser}
         team={selectedTeam}
         meetings={teamMeetings}
+        tasks={teamTasks}
         onBackToTeams={() => {
           setSelectedTeamId(null);
           setSelectedMeetingId(null);
+          setSelectedTaskId(null);
+          setSelectedTeamView('meetings');
         }}
         onCreateMeeting={handleCreateMeeting}
-        onOpenMeeting={setSelectedMeetingId}
+        onOpenMeeting={(meetingId) => {
+          setSelectedTaskId(null);
+          setSelectedMeetingId(meetingId);
+        }}
+        onOpenTasks={() => setSelectedTeamView('tasks')}
+        onOpenTask={(taskId) => {
+          setSelectedMeetingId(null);
+          setSelectedTaskId(taskId);
+        }}
         onLogout={handleLogout}
       />
     );
@@ -781,7 +1363,10 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     <TeamSelectionScreen
       user={currentUser}
       teams={teams}
-      onSelectTeam={setSelectedTeamId}
+      onSelectTeam={(teamId) => {
+        setSelectedTeamId(teamId);
+        setSelectedTeamView('meetings');
+      }}
       onLogout={handleLogout}
     />
   );
