@@ -1,9 +1,12 @@
-name: Deploy Development
+name: Deploy Backend Development
 
 on:
   push:
     branches:
       - develop
+    paths:
+      - backend/**
+      - .github/workflows/deploy-backend-dev.yml
   workflow_dispatch:
 
 permissions:
@@ -11,7 +14,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: deploy-development
+  group: deploy-backend-development
   cancel-in-progress: true
 
 jobs:
@@ -36,19 +39,8 @@ jobs:
 
       - name: Build image
         run: |
-          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_DEV }}/${{ vars.ARTIFACT_REGISTRY_REPOSITORY_DEV }}/${{ vars.ARTIFACT_IMAGE_NAME_FRONTEND }}:${{ github.sha }}"
-          docker build \
-            --build-arg VITE_APP_ENV=development \
-            --build-arg VITE_GIT_SHA=${{ github.sha }} \
-            --build-arg VITE_FIREBASE_API_KEY="${{ vars.VITE_FIREBASE_API_KEY_DEV }}" \
-            --build-arg VITE_FIREBASE_AUTH_DOMAIN="${{ vars.VITE_FIREBASE_AUTH_DOMAIN_DEV }}" \
-            --build-arg VITE_FIREBASE_PROJECT_ID="${{ vars.VITE_FIREBASE_PROJECT_ID_DEV }}" \
-            --build-arg VITE_FIREBASE_STORAGE_BUCKET="${{ vars.VITE_FIREBASE_STORAGE_BUCKET_DEV }}" \
-            --build-arg VITE_FIREBASE_MESSAGING_SENDER_ID="${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID_DEV }}" \
-            --build-arg VITE_FIREBASE_APP_ID="${{ vars.VITE_FIREBASE_APP_ID_DEV }}" \
-            --build-arg VITE_API_BASE_URL="${{ vars.VITE_API_BASE_URL_DEV }}" \
-            --tag "$IMAGE" \
-            frontend
+          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_DEV }}/${{ vars.ARTIFACT_REGISTRY_REPOSITORY_DEV }}/${{ vars.ARTIFACT_IMAGE_NAME_BACKEND }}:${{ github.sha }}"
+          docker build --tag "$IMAGE" backend
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Push image
@@ -56,11 +48,16 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
-          gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE_DEV }}" \
+          RUNTIME_SERVICE_ACCOUNT="withdev-backend-runtime@${{ vars.GCP_PROJECT_ID_DEV }}.iam.gserviceaccount.com"
+
+          gcloud run deploy "${{ vars.CLOUD_RUN_BACKEND_SERVICE_DEV }}" \
             --image "$IMAGE" \
             --project "${{ vars.GCP_PROJECT_ID_DEV }}" \
             --region "${{ vars.GCP_REGION }}" \
             --platform managed \
             --allow-unauthenticated \
+            --service-account "$RUNTIME_SERVICE_ACCOUNT" \
+            --set-env-vars "GEMINI_MODEL=${{ vars.GEMINI_MODEL_DEV }},CORS_ALLOWED_ORIGINS=${{ vars.BACKEND_CORS_ALLOWED_ORIGINS_DEV }}" \
+            --set-secrets "GEMINI_API_KEY=${{ vars.GEMINI_API_KEY_SECRET_DEV }}:latest" \
             --port 8080 \
             --quiet
