@@ -23,12 +23,14 @@ import {
 } from 'lucide-react';
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
+import { generateMinutesFromText } from './api/minutes';
 import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthContext';
 
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
 const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
 const meetingsStoragePrefix = 'withdev.meetings.v1';
 const tasksStoragePrefix = 'withdev.tasks.v1';
+const maxMinutesSourceLength = 50_000;
 
 type TeamRole = 'owner' | 'admin' | 'member';
 type MeetingStatus = 'active' | 'ended';
@@ -1064,6 +1066,73 @@ function TaskDetailScreen({ user, team, task, onBack, onLogout }: TaskDetailScre
   );
 }
 
+type MinutesGeneratorPanelProps = {
+  user: User;
+  meeting: MeetingSummary;
+  onGenerated: (meetingId: string, minutes: string) => void;
+};
+
+function MinutesGeneratorPanel({ user, meeting, onGenerated }: MinutesGeneratorPanelProps) {
+  const [sourceText, setSourceText] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const textLength = sourceText.length;
+  const canGenerate = sourceText.trim().length > 0 && textLength <= maxMinutesSourceLength && !isGenerating;
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canGenerate) return;
+
+    setError(null);
+    setIsGenerating(true);
+    try {
+      const minutes = await generateMinutesFromText(user, sourceText.trim());
+      onGenerated(meeting.id, minutes);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '議事録の生成に失敗しました。');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  return (
+    <form className="minutes-generator" onSubmit={handleSubmit}>
+      <div className="section-title-row">
+        <span className="section-icon">
+          <Sparkles size={22} />
+        </span>
+        <div>
+          <p className="eyebrow">Generate minutes</p>
+          <h2>議事録を生成</h2>
+        </div>
+      </div>
+
+      <label className="field-label" htmlFor="minutes-source">
+        文字起こし
+      </label>
+      <textarea
+        id="minutes-source"
+        value={sourceText}
+        maxLength={maxMinutesSourceLength + 1}
+        onChange={(event) => setSourceText(event.target.value)}
+        placeholder="会議の文字起こしやメモを貼り付けてください。"
+      />
+
+      <div className="minutes-generator-footer">
+        <span className={textLength > maxMinutesSourceLength ? 'count-text error' : 'count-text'}>
+          {textLength}/{maxMinutesSourceLength}
+        </span>
+        <button className="primary-button" type="submit" disabled={!canGenerate}>
+          {isGenerating ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+          {isGenerating ? '生成中' : '議事録を生成'}
+        </button>
+      </div>
+
+      {error && <p className="error-text">{error}</p>}
+    </form>
+  );
+}
+
 function MeetingMinutesPanel({ minutes }: { minutes: string | null }) {
   if (!minutes) {
     return (
@@ -1100,17 +1169,21 @@ function MeetingMinutesPanel({ minutes }: { minutes: string | null }) {
 }
 
 type MeetingRoomScreenProps = {
+  user: User;
   team: UserTeamSummary;
   meeting: MeetingSummary;
   onBackToList: () => void;
   onEndMeeting: (meetingId: string) => void;
+  onSaveMinutes: (meetingId: string, minutes: string) => void;
 };
 
 function MeetingRoomScreen({
+  user,
   team,
   meeting,
   onBackToList,
   onEndMeeting,
+  onSaveMinutes,
 }: MeetingRoomScreenProps) {
   const isActive = meeting.status === 'active';
   const [hasJoined, setHasJoined] = useState(false);
@@ -1189,6 +1262,9 @@ function MeetingRoomScreen({
         ) : (
           <MeetingMinutesPanel minutes={meeting.minutes} />
         )}
+
+        <MinutesGeneratorPanel user={user} meeting={meeting} onGenerated={onSaveMinutes} />
+        {isActive && meeting.minutes && <MeetingMinutesPanel minutes={meeting.minutes} />}
       </section>
     </main>
   );
@@ -1288,6 +1364,21 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     );
   };
 
+  const handleSaveMinutes = (meetingId: string, minutes: string) => {
+    const now = Date.now();
+    setMeetings((currentMeetings) =>
+      currentMeetings.map((meeting) =>
+        meeting.id === meetingId
+          ? {
+              ...meeting,
+              minutes,
+              updated_at: now,
+            }
+          : meeting,
+      ),
+    );
+  };
+
   const handleLogout = () => {
     void logout();
   };
@@ -1307,10 +1398,12 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   if (selectedTeam && selectedMeeting) {
     return (
       <MeetingRoomScreen
+        user={currentUser}
         team={selectedTeam}
         meeting={selectedMeeting}
         onBackToList={() => setSelectedMeetingId(null)}
         onEndMeeting={handleEndMeeting}
+        onSaveMinutes={handleSaveMinutes}
       />
     );
   }

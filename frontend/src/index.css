@@ -21,7 +21,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -851,7 +852,8 @@ h2 {
 }
 
 .join-panel,
-.minutes-panel {
+.minutes-panel,
+.minutes-generator {
   border: 1px solid #e4e7ec;
   border-radius: 8px;
   background: #fcfcfd;
@@ -871,9 +873,44 @@ h2 {
   gap: 14px;
 }
 
-.minutes-panel {
+.minutes-panel,
+.minutes-generator {
   display: grid;
   gap: 18px;
+}
+
+.minutes-generator textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 12px;
+  color: #111827;
+  outline: none;
+  line-height: 1.6;
+}
+
+.minutes-generator textarea:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgb(96 165 250 / 18%);
+}
+
+.minutes-generator-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.count-text {
+  color: #667085;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.count-text.error {
+  color: #b42318;
 }
 
 .minutes-body {
@@ -984,6 +1021,11 @@ h2 {
   .form-actions .primary-button,
   .form-actions .secondary-button {
     width: 100%;
+  }
+
+  .minutes-generator-footer {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .room-grid {
