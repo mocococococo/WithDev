@@ -21,6 +21,7 @@ export type MeetingSummary = {
   created_at: number;
   updated_at: number;
   ended_at: number | null;
+  minutes_id: string | null;
   minutes: string | null;
 };
 
@@ -204,6 +205,7 @@ function toMeetingSummary(meeting: ApiMeeting): MeetingSummary {
     created_at: toTimestamp(meeting.created_at),
     updated_at: toTimestamp(meeting.updated_at),
     ended_at: meeting.ended_at ? toTimestamp(meeting.ended_at) : null,
+    minutes_id: null,
     minutes: null,
   };
 }

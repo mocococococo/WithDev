@@ -13,6 +13,10 @@ class Settings:
     gemini_model: str | None
     cors_allowed_origins: list[str]
     database_url: str
+    slack_client_id: str | None
+    slack_client_secret: str | None
+    slack_redirect_uri: str | None
+    frontend_base_url: str
 
     def __init__(self) -> None:
         self.app_name = os.getenv("APP_NAME", "WithDev Backend")
@@ -23,6 +27,10 @@ class Settings:
             "DATABASE_URL",
             "postgresql+asyncpg://withdev:withdev@127.0.0.1:5432/withdev",
         )
+        self.slack_client_id = os.getenv("SLACK_CLIENT_ID")
+        self.slack_client_secret = os.getenv("SLACK_CLIENT_SECRET")
+        self.slack_redirect_uri = os.getenv("SLACK_REDIRECT_URI")
+        self.frontend_base_url = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:5173")
 
 
 def _parse_csv_env(name: str) -> list[str]:

@@ -22,6 +22,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -200,6 +201,10 @@ h2 {
   box-shadow: 0 8px 18px rgb(37 99 235 / 16%);
 }
 
+.secondary-button {
+  gap: 9px;
+}
+
 .primary-button:hover {
   border-color: #1d4ed8;
   background: #1d4ed8;
@@ -257,6 +262,12 @@ h2 {
 .error-text {
   margin-top: 16px;
   color: #b42318;
+  font-weight: 800;
+}
+
+.success-text {
+  margin-top: 16px;
+  color: #047857;
   font-weight: 800;
 }
 
@@ -361,6 +372,13 @@ h2 {
   justify-content: space-between;
   gap: 18px;
   margin-bottom: 18px;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .team-content {
@@ -853,7 +871,8 @@ h2 {
 
 .join-panel,
 .minutes-panel,
-.minutes-generator {
+.minutes-generator,
+.slack-post-panel {
   border: 1px solid #e4e7ec;
   border-radius: 8px;
   background: #fcfcfd;
@@ -874,9 +893,63 @@ h2 {
 }
 
 .minutes-panel,
-.minutes-generator {
+.minutes-generator,
+.slack-post-panel {
   display: grid;
   gap: 18px;
+}
+
+.inline-loading,
+.slack-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #667085;
+  font-weight: 800;
+}
+
+.slack-empty {
+  justify-content: space-between;
+}
+
+.slack-post-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.slack-select-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.select-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #344054;
+}
+
+.slack-select-row select {
+  min-height: 42px;
+  width: 100%;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #111827;
+  padding: 0 12px;
+  outline: none;
+}
+
+.slack-select-row select:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgb(96 165 250 / 18%);
 }
 
 .minutes-generator textarea {
@@ -987,6 +1060,7 @@ h2 {
 
   .app-header,
   .toolbar,
+  .toolbar-actions,
   .room-title-row,
   .join-panel {
     align-items: flex-start;
@@ -1026,6 +1100,24 @@ h2 {
   .minutes-generator-footer {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .toolbar-actions,
+  .toolbar-actions .primary-button,
+  .toolbar-actions .secondary-button,
+  .slack-empty,
+  .slack-select-row,
+  .slack-select-row .primary-button {
+    width: 100%;
+  }
+
+  .slack-empty {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .slack-select-row {
+    grid-template-columns: 1fr;
   }
 
   .room-grid {

@@ -81,8 +81,8 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --service-account "$RUNTIME_SERVICE_ACCOUNT" \
-            --set-env-vars "GEMINI_MODEL=${{ vars.GEMINI_MODEL_DEV }},CORS_ALLOWED_ORIGINS=${{ vars.BACKEND_CORS_ALLOWED_ORIGINS_DEV }}" \
-            --set-secrets "GEMINI_API_KEY=${{ vars.GEMINI_API_KEY_SECRET_DEV }}:latest,DATABASE_URL=${{ vars.DATABASE_URL_SECRET_DEV }}:latest" \
+            --set-env-vars "GEMINI_MODEL=${{ vars.GEMINI_MODEL_DEV }},CORS_ALLOWED_ORIGINS=${{ vars.BACKEND_CORS_ALLOWED_ORIGINS_DEV }},SLACK_CLIENT_ID=${{ vars.SLACK_CLIENT_ID_DEV }},SLACK_REDIRECT_URI=${{ vars.SLACK_REDIRECT_URI_DEV }},FRONTEND_BASE_URL=${{ vars.FRONTEND_BASE_URL_DEV }}" \
+            --set-secrets "GEMINI_API_KEY=${{ vars.GEMINI_API_KEY_SECRET_DEV }}:latest,DATABASE_URL=${{ vars.DATABASE_URL_SECRET_DEV }}:latest,SLACK_CLIENT_SECRET=${{ vars.SLACK_CLIENT_SECRET_SECRET_DEV }}:latest" \
             --set-cloudsql-instances "${{ vars.CLOUD_SQL_INSTANCE_DEV }}" \
             --port 8080 \
             --quiet

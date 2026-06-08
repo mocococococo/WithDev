@@ -8,13 +8,16 @@ import {
   ClipboardList,
   Clock3,
   FileText,
+  Hash,
   Loader2,
   LogIn,
   LogOut,
   Map,
   MessageSquareText,
   PlayCircle,
+  PlugZap,
   Plus,
+  Send,
   ShieldCheck,
   Sparkles,
   UserCheck,
@@ -30,11 +33,18 @@ import {
   fetchMeetingMinutes,
   fetchTeamMeetings,
   generateMeetingMinutesFromText,
+  type MeetingMinutesSummary,
   type MeetingStatus,
   type MeetingSummary,
   type TeamRole,
   type UserTeamSummary,
 } from './api/workspace';
+import {
+  fetchSlackChannels,
+  postMinutesToSlack,
+  startSlackOAuth,
+  type SlackChannel,
+} from './api/slack';
 import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthContext';
 
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
@@ -46,6 +56,11 @@ type MeetingFilter = 'all' | MeetingStatus;
 type TaskStatus = 'todo' | 'doing' | 'done';
 type TaskFilter = 'all' | TaskStatus;
 type TeamView = 'meetings' | 'tasks';
+type SlackNotice = {
+  type: 'success' | 'error';
+  teamId: string | null;
+  message: string;
+} | null;
 
 type TeamTask = {
   id: string;
@@ -108,6 +123,30 @@ function getDisplayName(user: User) {
 
 function getTasksStorageKey(userId: string) {
   return `${tasksStoragePrefix}.${userId}`;
+}
+
+function readSlackRedirectNotice(): SlackNotice {
+  if (typeof window === 'undefined') return null;
+
+  const { pathname, search } = window.location;
+  if (pathname !== '/slack/success' && pathname !== '/slack/error') {
+    return null;
+  }
+
+  const params = new URLSearchParams(search);
+  const teamId = params.get('team_id');
+  const reason = params.get('reason');
+  const isSuccess = pathname === '/slack/success';
+
+  window.history.replaceState({}, '', '/');
+
+  return {
+    type: isSuccess ? 'success' : 'error',
+    teamId,
+    message: isSuccess
+      ? 'Slack連携が完了しました。'
+      : `Slack連携に失敗しました。${reason ? ` (${reason})` : ''}`,
+  };
 }
 
 function createPlaceholderRoadmap(taskTitle: string): TaskRoadmap {
@@ -655,6 +694,7 @@ type MeetingListScreenProps = {
   tasks: TeamTask[];
   isLoadingMeetings: boolean;
   error: string | null;
+  slackNotice: SlackNotice;
   onBackToTeams: () => void;
   onCreateMeeting: (title: string, initialTheme: string) => Promise<void>;
   onOpenMeeting: (meetingId: string) => void;
@@ -670,6 +710,7 @@ function MeetingListScreen({
   tasks,
   isLoadingMeetings,
   error,
+  slackNotice,
   onBackToTeams,
   onCreateMeeting,
   onOpenMeeting,
@@ -679,6 +720,8 @@ function MeetingListScreen({
 }: MeetingListScreenProps) {
   const [filter, setFilter] = useState<MeetingFilter>('all');
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [isStartingSlack, setIsStartingSlack] = useState(false);
+  const [slackActionError, setSlackActionError] = useState<string | null>(null);
   const visibleMeetings = useMemo(() => {
     return meetings
       .filter((meeting) => filter === 'all' || meeting.status === filter)
@@ -688,6 +731,18 @@ function MeetingListScreen({
   const handleCreateMeeting = async (title: string, initialTheme: string) => {
     await onCreateMeeting(title, initialTheme);
     setShowCreateForm(false);
+  };
+
+  const handleStartSlackOAuth = async () => {
+    setSlackActionError(null);
+    setIsStartingSlack(true);
+    try {
+      const url = await startSlackOAuth(user, team.team_id);
+      window.location.assign(url);
+    } catch (err) {
+      setSlackActionError(err instanceof Error ? err.message : 'Slack連携を開始できませんでした。');
+      setIsStartingSlack(false);
+    }
   };
 
   return (
@@ -712,15 +767,33 @@ function MeetingListScreen({
               <h2>ミーティング一覧</h2>
               <p>{meetings.length} 件のミーティングがあります。</p>
             </div>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => setShowCreateForm((value) => !value)}
-            >
-              <Plus size={18} />
-              ミーティングを開始
-            </button>
+            <div className="toolbar-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void handleStartSlackOAuth()}
+                disabled={isStartingSlack}
+              >
+                {isStartingSlack ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
+                Slack連携
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => setShowCreateForm((value) => !value)}
+              >
+                <Plus size={18} />
+                ミーティングを開始
+              </button>
+            </div>
           </section>
+
+          {slackNotice && (
+            <p className={slackNotice.type === 'success' ? 'success-text' : 'error-text'}>
+              {slackNotice.message}
+            </p>
+          )}
+          {slackActionError && <p className="error-text">{slackActionError}</p>}
 
           {showCreateForm && (
             <MeetingCreateForm
@@ -953,7 +1026,7 @@ function TaskDetailScreen({ user, team, task, onBack, onLogout }: TaskDetailScre
 type MinutesGeneratorPanelProps = {
   user: User;
   meeting: MeetingSummary;
-  onGenerated: (meetingId: string, minutes: string) => void;
+  onGenerated: (meetingId: string, minutes: MeetingMinutesSummary) => void;
 };
 
 function MinutesGeneratorPanel({ user, meeting, onGenerated }: MinutesGeneratorPanelProps) {
@@ -971,7 +1044,7 @@ function MinutesGeneratorPanel({ user, meeting, onGenerated }: MinutesGeneratorP
     setIsGenerating(true);
     try {
       const minutes = await generateMeetingMinutesFromText(user, meeting.id, sourceText.trim());
-      onGenerated(meeting.id, minutes.body);
+      onGenerated(meeting.id, minutes);
     } catch (err) {
       setError(err instanceof Error ? err.message : '議事録の生成に失敗しました。');
     } finally {
@@ -1017,8 +1090,170 @@ function MinutesGeneratorPanel({ user, meeting, onGenerated }: MinutesGeneratorP
   );
 }
 
-function MeetingMinutesPanel({ minutes }: { minutes: string | null }) {
-  if (!minutes) {
+type SlackPostPanelProps = {
+  user: User;
+  team: UserTeamSummary;
+  meeting: MeetingSummary;
+};
+
+function SlackPostPanel({ user, team, meeting }: SlackPostPanelProps) {
+  const [channels, setChannels] = useState<SlackChannel[]>([]);
+  const [selectedChannelId, setSelectedChannelId] = useState('');
+  const [isLoadingChannels, setIsLoadingChannels] = useState(false);
+  const [isStartingSlack, setIsStartingSlack] = useState(false);
+  const [isPosting, setIsPosting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const minutesId = meeting.minutes_id;
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (!minutesId) {
+      setChannels([]);
+      setSelectedChannelId('');
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    setIsLoadingChannels(true);
+    setError(null);
+    setSuccess(null);
+
+    void fetchSlackChannels(user, team.team_id)
+      .then((nextChannels) => {
+        if (isCancelled) return;
+        setChannels(nextChannels);
+        setSelectedChannelId((currentValue) => currentValue || nextChannels[0]?.id || '');
+      })
+      .catch((err) => {
+        if (isCancelled) return;
+        setChannels([]);
+        setSelectedChannelId('');
+        setError(err instanceof Error ? err.message : 'Slackチャンネル一覧の取得に失敗しました。');
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoadingChannels(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [minutesId, team.team_id, user]);
+
+  const handleStartSlackOAuth = async () => {
+    setError(null);
+    setSuccess(null);
+    setIsStartingSlack(true);
+    try {
+      const url = await startSlackOAuth(user, team.team_id);
+      window.location.assign(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Slack連携を開始できませんでした。');
+      setIsStartingSlack(false);
+    }
+  };
+
+  const handlePost = async () => {
+    if (!minutesId || !selectedChannelId || isPosting) return;
+
+    setError(null);
+    setSuccess(null);
+    setIsPosting(true);
+    try {
+      const post = await postMinutesToSlack(user, minutesId, selectedChannelId);
+      const channelName =
+        post.channel_name || channels.find((channel) => channel.id === selectedChannelId)?.name;
+      setSuccess(`${channelName ? `#${channelName}` : 'Slack'} に投稿しました。`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Slackへの投稿に失敗しました。');
+    } finally {
+      setIsPosting(false);
+    }
+  };
+
+  return (
+    <section className="slack-post-panel">
+      <div className="section-title-row">
+        <span className="section-icon">
+          <Send size={22} />
+        </span>
+        <div>
+          <p className="eyebrow">Slack</p>
+          <h2>Slackへ投稿</h2>
+        </div>
+      </div>
+
+      {isLoadingChannels ? (
+        <div className="inline-loading">
+          <Loader2 className="spin" size={18} />
+          <span>Slackチャンネルを読み込み中</span>
+        </div>
+      ) : channels.length > 0 ? (
+        <div className="slack-post-controls">
+          <label className="field-label" htmlFor="slack-channel">
+            投稿先チャンネル
+          </label>
+          <div className="slack-select-row">
+            <span className="select-icon">
+              <Hash size={18} />
+            </span>
+            <select
+              id="slack-channel"
+              value={selectedChannelId}
+              onChange={(event) => setSelectedChannelId(event.target.value)}
+            >
+              {channels.map((channel) => (
+                <option key={channel.id} value={channel.id}>
+                  {channel.name}
+                </option>
+              ))}
+            </select>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => void handlePost()}
+              disabled={!selectedChannelId || isPosting}
+            >
+              {isPosting ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+              {isPosting ? '投稿中' : '投稿'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="slack-empty">
+          <p>Slack連携が必要です。</p>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => void handleStartSlackOAuth()}
+            disabled={isStartingSlack}
+          >
+            {isStartingSlack ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
+            Slack連携
+          </button>
+        </div>
+      )}
+
+      {error && <p className="error-text">{error}</p>}
+      {success && <p className="success-text">{success}</p>}
+    </section>
+  );
+}
+
+function MeetingMinutesPanel({
+  user,
+  team,
+  meeting,
+}: {
+  user: User;
+  team: UserTeamSummary;
+  meeting: MeetingSummary;
+}) {
+  if (!meeting.minutes) {
     return (
       <section className="minutes-panel">
         <div className="section-title-row">
@@ -1047,7 +1282,8 @@ function MeetingMinutesPanel({ minutes }: { minutes: string | null }) {
         </div>
       </div>
 
-      <p className="minutes-body">{minutes}</p>
+      <p className="minutes-body">{meeting.minutes}</p>
+      <SlackPostPanel user={user} team={team} meeting={meeting} />
     </section>
   );
 }
@@ -1057,7 +1293,7 @@ type MeetingRoomScreenProps = {
   team: UserTeamSummary;
   meeting: MeetingSummary;
   onBackToList: () => void;
-  onSaveMinutes: (meetingId: string, minutes: string) => void;
+  onSaveMinutes: (meetingId: string, minutes: MeetingMinutesSummary) => void;
 };
 
 function MeetingRoomScreen({
@@ -1135,11 +1371,13 @@ function MeetingRoomScreen({
             </button>
           </section>
         ) : (
-          <MeetingMinutesPanel minutes={meeting.minutes} />
+          <MeetingMinutesPanel user={user} team={team} meeting={meeting} />
         )}
 
         <MinutesGeneratorPanel user={user} meeting={meeting} onGenerated={onSaveMinutes} />
-        {isActive && meeting.minutes && <MeetingMinutesPanel minutes={meeting.minutes} />}
+        {isActive && meeting.minutes && (
+          <MeetingMinutesPanel user={user} team={team} meeting={meeting} />
+        )}
       </section>
     </main>
   );
@@ -1168,6 +1406,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [meetingError, setMeetingError] = useState<string | null>(null);
+  const [slackNotice, setSlackNotice] = useState<SlackNotice>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -1177,10 +1416,12 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
 
   useEffect(() => {
     let isCancelled = false;
+    const redirectNotice = readSlackRedirectNotice();
 
     setIsInitializing(true);
     setWorkspaceError(null);
     setMeetingError(null);
+    setSlackNotice(redirectNotice);
     setSelectedTeamId(null);
     setSelectedMeetingId(null);
     setSelectedTaskId(null);
@@ -1192,6 +1433,13 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       .then((nextTeams) => {
         if (isCancelled) return;
         setTeams(nextTeams);
+        if (
+          redirectNotice?.teamId &&
+          nextTeams.some((team) => team.team_id === redirectNotice.teamId)
+        ) {
+          setSelectedTeamId(redirectNotice.teamId);
+          setSelectedTeamView('meetings');
+        }
       })
       .catch((err) => {
         if (isCancelled) return;
@@ -1296,6 +1544,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       ]);
       const nextMeeting = {
         ...meeting,
+        minutes_id: minutes?.id ?? null,
         minutes: minutes?.body ?? null,
       };
       setMeetings((currentMeetings) => [
@@ -1309,14 +1558,15 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     }
   };
 
-  const handleSaveMinutes = (meetingId: string, minutes: string) => {
+  const handleSaveMinutes = (meetingId: string, minutes: MeetingMinutesSummary) => {
     const now = Date.now();
     setMeetings((currentMeetings) =>
       currentMeetings.map((meeting) =>
         meeting.id === meetingId
           ? {
               ...meeting,
-              minutes,
+              minutes_id: minutes.id,
+              minutes: minutes.body,
               updated_at: now,
             }
           : meeting,
@@ -1397,6 +1647,12 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         tasks={teamTasks}
         isLoadingMeetings={isLoadingMeetings}
         error={meetingError}
+        slackNotice={
+          slackNotice &&
+          (!slackNotice.teamId || slackNotice.teamId === selectedTeam.team_id)
+            ? slackNotice
+            : null
+        }
         onBackToTeams={() => {
           setSelectedTeamId(null);
           setSelectedMeetingId(null);
