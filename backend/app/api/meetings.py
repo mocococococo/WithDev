@@ -1,0 +1,282 @@
+from datetime import datetime, timezone
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
+
+from app.core.auth import AuthenticatedUser, verify_firebase_user
+from app.db.session import get_db_session
+from app.models.meeting import Meeting
+from app.models.minutes import MeetingMinutes
+from app.services.minutes_service import (
+    MAX_TEXT_LENGTH,
+    MinutesGenerationError,
+    generate_minutes_from_text,
+)
+from app.services.team_access_service import require_team_member
+
+
+router = APIRouter()
+
+
+class MeetingBody(BaseModel):
+    id: UUID
+    team_id: UUID
+    title: str
+    theme: str | None
+    status: str
+    started_at: datetime
+    ended_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    participant_count: int = 1
+
+
+class MeetingListResponse(BaseModel):
+    meetings: list[MeetingBody]
+
+
+class MeetingResponse(BaseModel):
+    meeting: MeetingBody
+
+
+class MeetingCreateRequest(BaseModel):
+    title: str | None = None
+    theme: str | None = None
+
+
+class MinutesFromTextRequest(BaseModel):
+    text: str | None = None
+
+
+class MinutesBody(BaseModel):
+    id: UUID
+    meeting_id: UUID
+    title: str | None
+    body: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class MinutesResponse(BaseModel):
+    minutes: MinutesBody
+
+
+@router.get("/teams/{team_id}/meetings", response_model=MeetingListResponse)
+async def list_team_meetings(
+    team_id: UUID,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> MeetingListResponse:
+    await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
+
+    result = await session.execute(
+        select(Meeting)
+        .where(Meeting.team_id == team_id, Meeting.is_deleted.is_(False))
+        .order_by(Meeting.updated_at.desc(), Meeting.created_at.desc())
+    )
+    return MeetingListResponse(
+        meetings=[_meeting_body(meeting) for meeting in result.scalars().all()]
+    )
+
+
+@router.post(
+    "/teams/{team_id}/meetings",
+    response_model=MeetingResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_team_meeting(
+    team_id: UUID,
+    request: MeetingCreateRequest,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> MeetingResponse:
+    await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
+
+    title = (request.title or "").strip()
+    theme = (request.theme or "").strip() or None
+    if not title:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="title is required",
+        )
+    if len(title) > 255:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="title must be 255 characters or less",
+        )
+
+    now = datetime.now(timezone.utc)
+    meeting = Meeting(
+        team_id=team_id,
+        title=title,
+        theme=theme,
+        status="active",
+        started_at=now,
+        ended_at=None,
+        is_deleted=False,
+    )
+    session.add(meeting)
+    await session.commit()
+    await session.refresh(meeting)
+
+    return MeetingResponse(meeting=_meeting_body(meeting))
+
+
+@router.get("/meetings/{meeting_id}", response_model=MeetingResponse)
+async def get_meeting(
+    meeting_id: UUID,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> MeetingResponse:
+    meeting = await _get_accessible_meeting(
+        session=session,
+        auth_user=auth_user,
+        meeting_id=meeting_id,
+    )
+    return MeetingResponse(meeting=_meeting_body(meeting))
+
+
+@router.get("/meetings/{meeting_id}/minutes", response_model=MinutesResponse)
+async def get_meeting_minutes(
+    meeting_id: UUID,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> MinutesResponse:
+    await _get_accessible_meeting(
+        session=session,
+        auth_user=auth_user,
+        meeting_id=meeting_id,
+    )
+    minutes = await _get_minutes(session=session, meeting_id=meeting_id)
+    if minutes is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="minutes not found",
+        )
+    return MinutesResponse(minutes=_minutes_body(minutes))
+
+
+@router.post("/meetings/{meeting_id}/minutes/from-text", response_model=MinutesResponse)
+async def generate_and_save_meeting_minutes(
+    meeting_id: UUID,
+    request: MinutesFromTextRequest | None = None,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> MinutesResponse:
+    meeting = await _get_accessible_meeting(
+        session=session,
+        auth_user=auth_user,
+        meeting_id=meeting_id,
+    )
+
+    text = request.text if request else ""
+    text = text or ""
+    if not text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="text is required",
+        )
+    if len(text) > MAX_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="text must be 50000 characters or less",
+        )
+
+    try:
+        body = await run_in_threadpool(generate_minutes_from_text, text.strip())
+    except MinutesGenerationError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to generate minutes",
+        ) from exc
+
+    minutes = await _get_minutes(session=session, meeting_id=meeting.id)
+    if minutes is None:
+        minutes = MeetingMinutes(
+            meeting_id=meeting.id,
+            title="議事録",
+            body=body,
+            source_text=text.strip(),
+            is_deleted=False,
+        )
+        session.add(minutes)
+    else:
+        minutes.title = minutes.title or "議事録"
+        minutes.body = body
+        minutes.source_text = text.strip()
+        minutes.is_deleted = False
+
+    await session.commit()
+    await session.refresh(minutes)
+
+    return MinutesResponse(minutes=_minutes_body(minutes))
+
+
+async def _get_accessible_meeting(
+    session: AsyncSession,
+    auth_user: AuthenticatedUser,
+    meeting_id: UUID,
+) -> Meeting:
+    result = await session.execute(
+        select(Meeting).where(
+            Meeting.id == meeting_id,
+            Meeting.is_deleted.is_(False),
+        )
+    )
+    meeting = result.scalar_one_or_none()
+    if meeting is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="meeting not found",
+        )
+
+    await require_team_member(
+        session=session,
+        auth_user=auth_user,
+        team_id=meeting.team_id,
+    )
+    return meeting
+
+
+async def _get_minutes(
+    session: AsyncSession,
+    meeting_id: UUID,
+) -> MeetingMinutes | None:
+    result = await session.execute(
+        select(MeetingMinutes).where(
+            MeetingMinutes.meeting_id == meeting_id,
+            MeetingMinutes.is_deleted.is_(False),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _meeting_body(meeting: Meeting) -> MeetingBody:
+    return MeetingBody(
+        id=meeting.id,
+        team_id=meeting.team_id,
+        title=meeting.title,
+        theme=meeting.theme,
+        status=meeting.status,
+        started_at=meeting.started_at,
+        ended_at=meeting.ended_at,
+        created_at=meeting.created_at,
+        updated_at=meeting.updated_at,
+        participant_count=1,
+    )
+
+
+def _minutes_body(minutes: MeetingMinutes) -> MinutesBody:
+    return MinutesBody(
+        id=minutes.id,
+        meeting_id=minutes.meeting_id,
+        title=minutes.title,
+        body=minutes.body,
+        created_at=minutes.created_at,
+        updated_at=minutes.updated_at,
+    )

@@ -23,41 +23,29 @@ import {
 } from 'lucide-react';
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
-import { generateMinutesFromText } from './api/minutes';
+import {
+  createTeamMeeting,
+  fetchMe,
+  fetchMeetingDetail,
+  fetchMeetingMinutes,
+  fetchTeamMeetings,
+  generateMeetingMinutesFromText,
+  type MeetingStatus,
+  type MeetingSummary,
+  type TeamRole,
+  type UserTeamSummary,
+} from './api/workspace';
 import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthContext';
 
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
 const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
-const meetingsStoragePrefix = 'withdev.meetings.v1';
 const tasksStoragePrefix = 'withdev.tasks.v1';
 const maxMinutesSourceLength = 50_000;
 
-type TeamRole = 'owner' | 'admin' | 'member';
-type MeetingStatus = 'active' | 'ended';
 type MeetingFilter = 'all' | MeetingStatus;
 type TaskStatus = 'todo' | 'doing' | 'done';
 type TaskFilter = 'all' | TaskStatus;
 type TeamView = 'meetings' | 'tasks';
-
-type UserTeamSummary = {
-  team_id: string;
-  name: string;
-  role: TeamRole;
-  member_count: number;
-};
-
-type MeetingSummary = {
-  id: string;
-  team_id: string;
-  title: string;
-  initial_theme: string;
-  status: MeetingStatus;
-  participant_count: number;
-  created_at: number;
-  updated_at: number;
-  ended_at: number | null;
-  minutes: string | null;
-};
 
 type TeamTask = {
   id: string;
@@ -118,30 +106,8 @@ function getDisplayName(user: User) {
   return user.displayName || user.email?.split('@')[0] || 'User';
 }
 
-function createDefaultTeam(user: User): UserTeamSummary {
-  const displayName = getDisplayName(user);
-  return {
-    team_id: `default_${user.uid}`,
-    name: `${displayName} のチーム`,
-    role: 'owner',
-    member_count: 1,
-  };
-}
-
-function getMeetingsStorageKey(userId: string) {
-  return `${meetingsStoragePrefix}.${userId}`;
-}
-
 function getTasksStorageKey(userId: string) {
   return `${tasksStoragePrefix}.${userId}`;
-}
-
-function createMeetingId() {
-  return `meeting_${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
-}
-
-function createPlaceholderMinutes(title: string, initialTheme: string): string {
-  return `${title}では「${initialTheme}」について話し合いました。現時点ではバックエンドから議事録を取得していないため、この文章はフロントエンドだけで動作確認するための仮の議事録です。実際の実装では、ミーティング終了後に生成または保存された議事録本文をバックエンドから取得し、この領域にそのまま表示します。議論の流れ、参加者の発言、合意に至った背景、次に確認したい論点などをひとつの文章として読みやすく表示できることを確認するため、少し長めの本文にしています。`;
 }
 
 function createPlaceholderRoadmap(taskTitle: string): TaskRoadmap {
@@ -174,107 +140,6 @@ function createPlaceholderRoadmap(taskTitle: string): TaskRoadmap {
       },
     ],
   };
-}
-
-function createSeedMeetings(teamId: string): MeetingSummary[] {
-  const now = Date.now();
-
-  return [
-    {
-      id: 'demo_product_sync',
-      team_id: teamId,
-      title: 'プロダクト方針ミーティング',
-      initial_theme: '最初に決めることを整理する',
-      status: 'active',
-      participant_count: 1,
-      created_at: now - 1000 * 60 * 45,
-      updated_at: now - 1000 * 60 * 8,
-      ended_at: null,
-      minutes: null,
-    },
-    {
-      id: 'demo_weekly_review',
-      team_id: teamId,
-      title: '週次ふりかえり',
-      initial_theme: '今週の学びと次の一手',
-      status: 'ended',
-      participant_count: 2,
-      created_at: now - 1000 * 60 * 60 * 26,
-      updated_at: now - 1000 * 60 * 60 * 25,
-      ended_at: now - 1000 * 60 * 60 * 25,
-      minutes: createPlaceholderMinutes('週次ふりかえり', '今週の学びと次の一手'),
-    },
-  ];
-}
-
-function parseMinutesText(value: unknown): string | null {
-  if (typeof value === 'string') return value;
-  if (value && typeof value === 'object' && 'summary' in value) {
-    const legacyMinutes = value as { summary?: unknown };
-    return typeof legacyMinutes.summary === 'string' ? legacyMinutes.summary : null;
-  }
-  return null;
-}
-
-function parseMeetingSummary(value: unknown): MeetingSummary | null {
-  if (!value || typeof value !== 'object') return null;
-
-  const meeting = value as Partial<MeetingSummary>;
-  if (
-    typeof meeting.id !== 'string' ||
-    typeof meeting.team_id !== 'string' ||
-    typeof meeting.title !== 'string' ||
-    typeof meeting.initial_theme !== 'string' ||
-    (meeting.status !== 'active' && meeting.status !== 'ended') ||
-    typeof meeting.participant_count !== 'number' ||
-    typeof meeting.created_at !== 'number' ||
-    typeof meeting.updated_at !== 'number' ||
-    (typeof meeting.ended_at !== 'number' && meeting.ended_at !== null)
-  ) {
-    return null;
-  }
-
-  const minutes =
-    meeting.status === 'ended'
-      ? parseMinutesText(meeting.minutes) ?? createPlaceholderMinutes(meeting.title, meeting.initial_theme)
-      : null;
-
-  return {
-    id: meeting.id,
-    team_id: meeting.team_id,
-    title: meeting.title,
-    initial_theme: meeting.initial_theme,
-    status: meeting.status,
-    participant_count: meeting.participant_count,
-    created_at: meeting.created_at,
-    updated_at: meeting.updated_at,
-    ended_at: meeting.ended_at,
-    minutes,
-  };
-}
-
-function loadMeetings(userId: string, teamId: string) {
-  if (typeof window === 'undefined') return createSeedMeetings(teamId);
-
-  try {
-    const rawValue = window.localStorage.getItem(getMeetingsStorageKey(userId));
-    if (!rawValue) return createSeedMeetings(teamId);
-
-    const parsedValue: unknown = JSON.parse(rawValue);
-    if (!Array.isArray(parsedValue)) return createSeedMeetings(teamId);
-
-    const meetings = parsedValue
-      .map(parseMeetingSummary)
-      .filter((meeting): meeting is MeetingSummary => meeting !== null);
-    return meetings.length > 0 ? meetings : createSeedMeetings(teamId);
-  } catch {
-    return createSeedMeetings(teamId);
-  }
-}
-
-function saveMeetings(userId: string, meetings: MeetingSummary[]) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(getMeetingsStorageKey(userId), JSON.stringify(meetings));
 }
 
 function parseRoadmapStep(value: unknown): RoadmapStep | null {
@@ -576,22 +441,30 @@ function TeamSelectionScreen({ user, teams, onSelectTeam, onLogout }: TeamSelect
 }
 
 type MeetingCreateFormProps = {
-  onCreate: (title: string, initialTheme: string) => void;
+  onCreate: (title: string, initialTheme: string) => Promise<void>;
   onCancel: () => void;
 };
 
 function MeetingCreateForm({ onCreate, onCancel }: MeetingCreateFormProps) {
   const [title, setTitle] = useState('');
   const [initialTheme, setInitialTheme] = useState('');
-  const canSubmit = title.trim().length > 0 && initialTheme.trim().length > 0;
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const canSubmit = title.trim().length > 0 && initialTheme.trim().length > 0 && !isSubmitting;
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canSubmit) return;
 
-    onCreate(title.trim(), initialTheme.trim());
-    setTitle('');
-    setInitialTheme('');
+    setIsSubmitting(true);
+    try {
+      await onCreate(title.trim(), initialTheme.trim());
+      setTitle('');
+      setInitialTheme('');
+    } catch {
+      // Parent components show the user-facing error.
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -634,8 +507,8 @@ function MeetingCreateForm({ onCreate, onCancel }: MeetingCreateFormProps) {
           キャンセル
         </button>
         <button className="primary-button" type="submit" disabled={!canSubmit}>
-          <Video size={18} />
-          開始する
+          {isSubmitting ? <Loader2 className="spin" size={18} /> : <Video size={18} />}
+          {isSubmitting ? '作成中' : '開始する'}
         </button>
       </div>
     </form>
@@ -780,8 +653,10 @@ type MeetingListScreenProps = {
   team: UserTeamSummary;
   meetings: MeetingSummary[];
   tasks: TeamTask[];
+  isLoadingMeetings: boolean;
+  error: string | null;
   onBackToTeams: () => void;
-  onCreateMeeting: (title: string, initialTheme: string) => void;
+  onCreateMeeting: (title: string, initialTheme: string) => Promise<void>;
   onOpenMeeting: (meetingId: string) => void;
   onOpenTasks: () => void;
   onOpenTask: (taskId: string) => void;
@@ -793,6 +668,8 @@ function MeetingListScreen({
   team,
   meetings,
   tasks,
+  isLoadingMeetings,
+  error,
   onBackToTeams,
   onCreateMeeting,
   onOpenMeeting,
@@ -808,8 +685,8 @@ function MeetingListScreen({
       .sort((a, b) => b.updated_at - a.updated_at);
   }, [filter, meetings]);
 
-  const handleCreateMeeting = (title: string, initialTheme: string) => {
-    onCreateMeeting(title, initialTheme);
+  const handleCreateMeeting = async (title: string, initialTheme: string) => {
+    await onCreateMeeting(title, initialTheme);
     setShowCreateForm(false);
   };
 
@@ -865,7 +742,14 @@ function MeetingListScreen({
             ))}
           </section>
 
-          {visibleMeetings.length > 0 ? (
+          {error && <p className="error-text">{error}</p>}
+
+          {isLoadingMeetings ? (
+            <section className="empty-state">
+              <Loader2 className="spin" size={42} />
+              <h2>読み込み中</h2>
+            </section>
+          ) : visibleMeetings.length > 0 ? (
             <section className="meeting-list" aria-label="ミーティング一覧">
               {visibleMeetings.map((meeting) => (
                 <MeetingCard
@@ -1086,8 +970,8 @@ function MinutesGeneratorPanel({ user, meeting, onGenerated }: MinutesGeneratorP
     setError(null);
     setIsGenerating(true);
     try {
-      const minutes = await generateMinutesFromText(user, sourceText.trim());
-      onGenerated(meeting.id, minutes);
+      const minutes = await generateMeetingMinutesFromText(user, meeting.id, sourceText.trim());
+      onGenerated(meeting.id, minutes.body);
     } catch (err) {
       setError(err instanceof Error ? err.message : '議事録の生成に失敗しました。');
     } finally {
@@ -1173,7 +1057,6 @@ type MeetingRoomScreenProps = {
   team: UserTeamSummary;
   meeting: MeetingSummary;
   onBackToList: () => void;
-  onEndMeeting: (meetingId: string) => void;
   onSaveMinutes: (meetingId: string, minutes: string) => void;
 };
 
@@ -1182,7 +1065,6 @@ function MeetingRoomScreen({
   team,
   meeting,
   onBackToList,
-  onEndMeeting,
   onSaveMinutes,
 }: MeetingRoomScreenProps) {
   const isActive = meeting.status === 'active';
@@ -1237,28 +1119,21 @@ function MeetingRoomScreen({
         </div>
 
         {isActive ? (
-          <>
-            <section className="join-panel">
-              <div>
-                <p className="eyebrow">Live meeting</p>
-                <h2>進行中のミーティング</h2>
-              </div>
-              <button
-                className="primary-button"
-                type="button"
-                onClick={() => setHasJoined(true)}
-                disabled={hasJoined}
-              >
-                <PlayCircle size={18} />
-                {hasJoined ? '参加中' : 'ミーティングに参加'}
-              </button>
-            </section>
-
-            <button className="danger-button" type="button" onClick={() => onEndMeeting(meeting.id)}>
-              <CheckCircle2 size={18} />
-              ミーティングを終了
+          <section className="join-panel">
+            <div>
+              <p className="eyebrow">Live meeting</p>
+              <h2>進行中のミーティング</h2>
+            </div>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => setHasJoined(true)}
+              disabled={hasJoined}
+            >
+              <PlayCircle size={18} />
+              {hasJoined ? '参加中' : 'ミーティングに参加'}
             </button>
-          </>
+          </section>
         ) : (
           <MeetingMinutesPanel minutes={meeting.minutes} />
         )}
@@ -1288,33 +1163,97 @@ type WorkspaceAppProps = {
 
 function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const { logout } = useAuth();
-  const teams = useMemo(() => [createDefaultTeam(currentUser)], [currentUser]);
-  const defaultTeamId = teams[0].team_id;
+  const [teams, setTeams] = useState<UserTeamSummary[]>([]);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [meetingError, setMeetingError] = useState<string | null>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTeamView, setSelectedTeamView] = useState<TeamView>('meetings');
-  const [meetings, setMeetings] = useState<MeetingSummary[]>(() =>
-    loadMeetings(currentUser.uid, defaultTeamId),
-  );
-  const [tasks, setTasks] = useState<TeamTask[]>(() => loadTasks(currentUser, defaultTeamId));
+  const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
+  const [tasks, setTasks] = useState<TeamTask[]>([]);
 
   useEffect(() => {
+    let isCancelled = false;
+
+    setIsInitializing(true);
+    setWorkspaceError(null);
+    setMeetingError(null);
     setSelectedTeamId(null);
     setSelectedMeetingId(null);
     setSelectedTaskId(null);
     setSelectedTeamView('meetings');
-    setMeetings(loadMeetings(currentUser.uid, defaultTeamId));
-    setTasks(loadTasks(currentUser, defaultTeamId));
-  }, [currentUser, currentUser.uid, defaultTeamId]);
+    setMeetings([]);
+    setTasks([]);
+
+    void fetchMe(currentUser)
+      .then((nextTeams) => {
+        if (isCancelled) return;
+        setTeams(nextTeams);
+      })
+      .catch((err) => {
+        if (isCancelled) return;
+        setTeams([]);
+        setWorkspaceError(err instanceof Error ? err.message : 'ユーザー初期化に失敗しました。');
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsInitializing(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentUser]);
 
   useEffect(() => {
-    saveMeetings(currentUser.uid, meetings);
-  }, [currentUser.uid, meetings]);
+    let isCancelled = false;
+
+    if (!selectedTeamId) {
+      setMeetings([]);
+      setTasks([]);
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    setSelectedMeetingId(null);
+    setSelectedTaskId(null);
+    setSelectedTeamView('meetings');
+    setTasks(loadTasks(currentUser, selectedTeamId));
+    setIsLoadingMeetings(true);
+    setMeetingError(null);
+
+    void fetchTeamMeetings(currentUser, selectedTeamId)
+      .then((nextMeetings) => {
+        if (!isCancelled) {
+          setMeetings(nextMeetings);
+        }
+      })
+      .catch((err) => {
+        if (!isCancelled) {
+          setMeetings([]);
+          setMeetingError(err instanceof Error ? err.message : 'ミーティング一覧の取得に失敗しました。');
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoadingMeetings(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentUser, selectedTeamId]);
 
   useEffect(() => {
+    if (!selectedTeamId) return;
     saveTasks(currentUser.uid, tasks);
-  }, [currentUser.uid, tasks]);
+  }, [currentUser.uid, selectedTeamId, tasks]);
 
   const selectedTeam = teams.find((team) => team.team_id === selectedTeamId) ?? null;
   const selectedMeeting = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null;
@@ -1326,42 +1265,48 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     ? tasks.filter((task) => task.team_id === selectedTeam.team_id)
     : [];
 
-  const handleCreateMeeting = (title: string, initialTheme: string) => {
+  const handleCreateMeeting = async (title: string, initialTheme: string) => {
     if (!selectedTeam) return;
 
-    const now = Date.now();
-    const nextMeeting: MeetingSummary = {
-      id: createMeetingId(),
-      team_id: selectedTeam.team_id,
-      title,
-      initial_theme: initialTheme,
-      status: 'active',
-      participant_count: 1,
-      created_at: now,
-      updated_at: now,
-      ended_at: null,
-      minutes: null,
-    };
-
-    setMeetings((currentMeetings) => [nextMeeting, ...currentMeetings]);
-    setSelectedMeetingId(nextMeeting.id);
+    setMeetingError(null);
+    try {
+      const nextMeeting = await createTeamMeeting(
+        currentUser,
+        selectedTeam.team_id,
+        title,
+        initialTheme,
+      );
+      setMeetings((currentMeetings) => [
+        nextMeeting,
+        ...currentMeetings.filter((meeting) => meeting.id !== nextMeeting.id),
+      ]);
+      setSelectedMeetingId(nextMeeting.id);
+    } catch (err) {
+      setMeetingError(err instanceof Error ? err.message : 'ミーティング作成に失敗しました。');
+      throw err;
+    }
   };
 
-  const handleEndMeeting = (meetingId: string) => {
-    const now = Date.now();
-    setMeetings((currentMeetings) =>
-      currentMeetings.map((meeting) =>
-        meeting.id === meetingId
-          ? {
-              ...meeting,
-              status: 'ended',
-              updated_at: now,
-              ended_at: now,
-              minutes: meeting.minutes ?? createPlaceholderMinutes(meeting.title, meeting.initial_theme),
-            }
-          : meeting,
-      ),
-    );
+  const handleOpenMeeting = async (meetingId: string) => {
+    setMeetingError(null);
+    try {
+      const [meeting, minutes] = await Promise.all([
+        fetchMeetingDetail(currentUser, meetingId),
+        fetchMeetingMinutes(currentUser, meetingId),
+      ]);
+      const nextMeeting = {
+        ...meeting,
+        minutes: minutes?.body ?? null,
+      };
+      setMeetings((currentMeetings) => [
+        nextMeeting,
+        ...currentMeetings.filter((currentMeeting) => currentMeeting.id !== nextMeeting.id),
+      ]);
+      setSelectedTaskId(null);
+      setSelectedMeetingId(nextMeeting.id);
+    } catch (err) {
+      setMeetingError(err instanceof Error ? err.message : 'ミーティング詳細の取得に失敗しました。');
+    }
   };
 
   const handleSaveMinutes = (meetingId: string, minutes: string) => {
@@ -1383,6 +1328,26 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     void logout();
   };
 
+  if (isInitializing) {
+    return <LoadingScreen />;
+  }
+
+  if (workspaceError && teams.length === 0) {
+    return (
+      <main className="app-layout">
+        <header className="app-header">
+          <div>
+            <p className="eyebrow">WithDev</p>
+            <h1>チームを選択</h1>
+            <p className="error-text">{workspaceError}</p>
+          </div>
+          <AccountMenu user={currentUser} onLogout={handleLogout} />
+        </header>
+        <BuildFooter />
+      </main>
+    );
+  }
+
   if (selectedTeam && selectedTask && selectedTask.team_id === selectedTeam.team_id) {
     return (
       <TaskDetailScreen
@@ -1402,7 +1367,6 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         team={selectedTeam}
         meeting={selectedMeeting}
         onBackToList={() => setSelectedMeetingId(null)}
-        onEndMeeting={handleEndMeeting}
         onSaveMinutes={handleSaveMinutes}
       />
     );
@@ -1431,6 +1395,8 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         team={selectedTeam}
         meetings={teamMeetings}
         tasks={teamTasks}
+        isLoadingMeetings={isLoadingMeetings}
+        error={meetingError}
         onBackToTeams={() => {
           setSelectedTeamId(null);
           setSelectedMeetingId(null);
@@ -1438,10 +1404,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
           setSelectedTeamView('meetings');
         }}
         onCreateMeeting={handleCreateMeeting}
-        onOpenMeeting={(meetingId) => {
-          setSelectedTaskId(null);
-          setSelectedMeetingId(meetingId);
-        }}
+        onOpenMeeting={(meetingId) => void handleOpenMeeting(meetingId)}
         onOpenTasks={() => setSelectedTeamView('tasks')}
         onOpenTask={(taskId) => {
           setSelectedMeetingId(null);

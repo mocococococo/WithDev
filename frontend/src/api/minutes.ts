@@ -1,6 +1,7 @@
 import type { User } from 'firebase/auth';
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
+import { fetchWithAuth, readErrorDetail } from './http';
+
 const defaultMinutesError = '議事録の生成に失敗しました。時間をおいて再試行してください。';
 
 type MinutesFromTextResponse = {
@@ -8,24 +9,6 @@ type MinutesFromTextResponse = {
     body?: unknown;
   };
 };
-
-function buildApiUrl(path: string) {
-  return `${apiBaseUrl}${path}`;
-}
-
-async function readErrorDetail(response: Response) {
-  try {
-    const payload: unknown = await response.json();
-    if (payload && typeof payload === 'object' && 'detail' in payload) {
-      const detail = (payload as { detail?: unknown }).detail;
-      return typeof detail === 'string' ? detail : response.statusText;
-    }
-  } catch {
-    // Fall back to the status text below.
-  }
-
-  return response.statusText;
-}
 
 function getReadableMinutesError(detail: string, status: number) {
   if (detail === 'text is required') {
@@ -52,25 +35,14 @@ function getReadableMinutesError(detail: string, status: number) {
 }
 
 export async function generateMinutesFromText(user: User, text: string) {
-  let token: string;
-  try {
-    token = await user.getIdToken();
-  } catch {
-    throw new Error('ログイン状態を確認してください。');
-  }
-
   let response: Response;
   try {
-    response = await fetch(buildApiUrl('/api/minutes/from-text'), {
+    response = await fetchWithAuth(user, '/api/minutes/from-text', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify({ text }),
     });
-  } catch {
-    throw new Error('バックエンドに接続できません。');
+  } catch (err) {
+    throw err instanceof Error ? err : new Error('バックエンドに接続できません。');
   }
 
   if (!response.ok) {

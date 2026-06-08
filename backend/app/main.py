@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.me import router as me_router
+from app.api.meetings import router as meetings_router
 from app.api.minutes import router as minutes_router
 from app.core.config import get_settings
 
@@ -19,6 +21,8 @@ if settings.cors_allowed_origins:
     )
 
 app.include_router(minutes_router, prefix="/api/minutes", tags=["minutes"])
+app.include_router(me_router, prefix="/api", tags=["me"])
+app.include_router(meetings_router, prefix="/api", tags=["meetings"])
 
 
 @app.get("/health")
