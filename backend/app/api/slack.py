@@ -15,14 +15,18 @@ from app.db.session import get_db_session
 from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
 from app.models.slack import SlackConnection, SlackOAuthState, SlackPostLog
+from app.services.slack_post_service import (
+    SlackConnectionNotFoundError,
+    SlackPostError,
+    create_slack_post_for_minutes,
+    get_active_slack_connection,
+)
 from app.services.slack_service import (
     SLACK_AUTHORIZE_URL,
     SLACK_BOT_SCOPES,
     SlackApiError,
-    build_minutes_message,
     exchange_oauth_code,
     list_public_channels,
-    post_message,
 )
 from app.services.team_access_service import require_team_member
 
@@ -150,7 +154,13 @@ async def list_slack_channels(
     session: AsyncSession = Depends(get_db_session),
 ) -> SlackChannelListResponse:
     await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
-    connection = await _get_active_slack_connection(session=session, team_id=team_id)
+    try:
+        connection = await get_active_slack_connection(session=session, team_id=team_id)
+    except SlackConnectionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="slack connection not found",
+        ) from exc
 
     try:
         channels = await list_public_channels(bot_access_token=connection.bot_access_token)
@@ -187,49 +197,23 @@ async def post_minutes_to_slack(
         auth_user=auth_user,
         minutes_id=minutes_id,
     )
-    connection = await _get_active_slack_connection(session=session, team_id=meeting.team_id)
-    channel_name = await _get_channel_name(
-        bot_access_token=connection.bot_access_token,
-        channel_id=channel_id,
-    )
-
     try:
-        post_result = await post_message(
-            bot_access_token=connection.bot_access_token,
+        post_log = await create_slack_post_for_minutes(
+            session=session,
+            team_id=meeting.team_id,
+            minutes=minutes,
             channel_id=channel_id,
-            text=build_minutes_message(title=minutes.title, body=minutes.body),
         )
-    except SlackApiError as exc:
-        failed_log = SlackPostLog(
-            minutes_id=minutes.id,
-            slack_connection_id=connection.id,
-            channel_id=channel_id,
-            channel_name=channel_name,
-            slack_ts=None,
-            status="failed",
-            error_message=str(exc)[:1000],
-            is_deleted=False,
-        )
-        session.add(failed_log)
-        await session.commit()
+    except SlackConnectionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="slack connection not found",
+        ) from exc
+    except SlackPostError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="failed to post minutes to slack",
         ) from exc
-
-    post_log = SlackPostLog(
-        minutes_id=minutes.id,
-        slack_connection_id=connection.id,
-        channel_id=post_result.channel_id,
-        channel_name=channel_name,
-        slack_ts=post_result.slack_ts,
-        status="success",
-        error_message=None,
-        is_deleted=False,
-    )
-    session.add(post_log)
-    await session.commit()
-    await session.refresh(post_log)
 
     return SlackPostResponse(slack_post=_slack_post_body(post_log))
 
@@ -289,30 +273,6 @@ async def _save_slack_connection(
     return existing
 
 
-async def _get_active_slack_connection(
-    *,
-    session: AsyncSession,
-    team_id: UUID,
-) -> SlackConnection:
-    result = await session.execute(
-        select(SlackConnection)
-        .where(
-            SlackConnection.team_id == team_id,
-            SlackConnection.status == "active",
-            SlackConnection.is_deleted.is_(False),
-        )
-        .order_by(SlackConnection.updated_at.desc())
-        .limit(1)
-    )
-    connection = result.scalar_one_or_none()
-    if connection is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="slack connection not found",
-        )
-    return connection
-
-
 async def _get_accessible_minutes(
     *,
     session: AsyncSession,
@@ -347,22 +307,6 @@ async def _get_accessible_minutes(
 
     await require_team_member(session=session, auth_user=auth_user, team_id=meeting.team_id)
     return minutes, meeting
-
-
-async def _get_channel_name(
-    *,
-    bot_access_token: str,
-    channel_id: str,
-) -> str | None:
-    try:
-        channels = await list_public_channels(bot_access_token=bot_access_token)
-    except SlackApiError:
-        return None
-
-    for channel in channels:
-        if channel.id == channel_id:
-            return channel.name
-    return None
 
 
 def _redirect_to_frontend(

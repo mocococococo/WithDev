@@ -11,15 +11,22 @@ from app.core.auth import AuthenticatedUser, verify_firebase_user
 from app.db.session import get_db_session
 from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
+from app.models.slack import SlackPostLog
 from app.services.minutes_service import (
     MAX_TEXT_LENGTH,
     MinutesGenerationError,
     generate_minutes_from_text,
 )
+from app.services.slack_post_service import (
+    SlackConnectionNotFoundError,
+    SlackPostError,
+    create_slack_post_for_minutes,
+)
 from app.services.team_access_service import require_team_member
 
 
 router = APIRouter()
+DEFAULT_MINUTES_TITLE = "\u8b70\u4e8b\u9332"
 
 
 class MeetingBody(BaseModel):
@@ -52,6 +59,11 @@ class MinutesFromTextRequest(BaseModel):
     text: str | None = None
 
 
+class MinutesToSlackRequest(BaseModel):
+    text: str | None = None
+    channel_id: str | None = None
+
+
 class MinutesBody(BaseModel):
     id: UUID
     meeting_id: UUID
@@ -63,6 +75,21 @@ class MinutesBody(BaseModel):
 
 class MinutesResponse(BaseModel):
     minutes: MinutesBody
+
+
+class MinutesToSlackPostBody(BaseModel):
+    id: UUID
+    minutes_id: UUID
+    channel_id: str
+    channel_name: str | None
+    slack_ts: str | None
+    status: str
+    created_at: datetime
+
+
+class MinutesToSlackResponse(BaseModel):
+    minutes: MinutesBody
+    slack_post: MinutesToSlackPostBody
 
 
 @router.get("/teams/{team_id}/meetings", response_model=MeetingListResponse)
@@ -172,22 +199,77 @@ async def generate_and_save_meeting_minutes(
         auth_user=auth_user,
         meeting_id=meeting_id,
     )
+    minutes = await _generate_and_save_minutes(
+        session=session,
+        meeting=meeting,
+        text=request.text if request else None,
+    )
+    return MinutesResponse(minutes=_minutes_body(minutes))
 
-    text = request.text if request else ""
-    text = text or ""
-    if not text.strip():
+
+@router.post(
+    "/meetings/{meeting_id}/minutes_to_slack",
+    response_model=MinutesToSlackResponse,
+)
+async def generate_minutes_and_post_to_slack(
+    meeting_id: UUID,
+    request: MinutesToSlackRequest | None = None,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> MinutesToSlackResponse:
+    meeting = await _get_accessible_meeting(
+        session=session,
+        auth_user=auth_user,
+        meeting_id=meeting_id,
+    )
+
+    channel_id = ((request.channel_id if request else None) or "").strip()
+    if not channel_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="text is required",
+            detail="channel_id is required",
         )
-    if len(text) > MAX_TEXT_LENGTH:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="text must be 50000 characters or less",
-        )
+
+    minutes = await _generate_and_save_minutes(
+        session=session,
+        meeting=meeting,
+        text=request.text if request else None,
+    )
 
     try:
-        body = await run_in_threadpool(generate_minutes_from_text, text.strip())
+        post_log = await create_slack_post_for_minutes(
+            session=session,
+            team_id=meeting.team_id,
+            minutes=minutes,
+            channel_id=channel_id,
+        )
+    except SlackConnectionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="slack connection not found",
+        ) from exc
+    except SlackPostError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to post minutes to slack",
+        ) from exc
+
+    return MinutesToSlackResponse(
+        minutes=_minutes_body(minutes),
+        slack_post=_minutes_to_slack_post_body(post_log),
+    )
+
+
+async def _generate_and_save_minutes(
+    *,
+    session: AsyncSession,
+    meeting: Meeting,
+    text: str | None,
+) -> MeetingMinutes:
+    normalized_text = _validate_minutes_text(text)
+
+    try:
+        body = await run_in_threadpool(generate_minutes_from_text, normalized_text)
     except MinutesGenerationError as exc:
         await session.rollback()
         raise HTTPException(
@@ -199,22 +281,36 @@ async def generate_and_save_meeting_minutes(
     if minutes is None:
         minutes = MeetingMinutes(
             meeting_id=meeting.id,
-            title="議事録",
+            title=DEFAULT_MINUTES_TITLE,
             body=body,
-            source_text=text.strip(),
+            source_text=normalized_text,
             is_deleted=False,
         )
         session.add(minutes)
     else:
-        minutes.title = minutes.title or "議事録"
+        minutes.title = minutes.title or DEFAULT_MINUTES_TITLE
         minutes.body = body
-        minutes.source_text = text.strip()
+        minutes.source_text = normalized_text
         minutes.is_deleted = False
 
     await session.commit()
     await session.refresh(minutes)
+    return minutes
 
-    return MinutesResponse(minutes=_minutes_body(minutes))
+
+def _validate_minutes_text(text: str | None) -> str:
+    normalized_text = (text or "").strip()
+    if not normalized_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="text is required",
+        )
+    if len(normalized_text) > MAX_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="text must be 50000 characters or less",
+        )
+    return normalized_text
 
 
 async def _get_accessible_meeting(
@@ -279,4 +375,16 @@ def _minutes_body(minutes: MeetingMinutes) -> MinutesBody:
         body=minutes.body,
         created_at=minutes.created_at,
         updated_at=minutes.updated_at,
+    )
+
+
+def _minutes_to_slack_post_body(post_log: SlackPostLog) -> MinutesToSlackPostBody:
+    return MinutesToSlackPostBody(
+        id=post_log.id,
+        minutes_id=post_log.minutes_id,
+        channel_id=post_log.channel_id,
+        channel_name=post_log.channel_name,
+        slack_ts=post_log.slack_ts,
+        status=post_log.status,
+        created_at=post_log.created_at,
     )
