@@ -699,6 +699,141 @@ h2 {
   line-height: 1.65;
 }
 
+.task-edit-form {
+  display: grid;
+  gap: 16px;
+}
+
+.task-edit-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 12px;
+}
+
+.task-field,
+.assignee-picker {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  background: #fcfcfd;
+  padding: 14px;
+}
+
+.task-field.dirty,
+.assignee-picker.dirty {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.task-field span,
+.assignee-picker-header span {
+  color: #667085;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.task-field input,
+.task-field select,
+.task-field textarea,
+.assignee-picker-header input {
+  width: 100%;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #111827;
+  padding: 10px 12px;
+  outline: none;
+  line-height: 1.5;
+}
+
+.task-field textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.task-field input:focus,
+.task-field select:focus,
+.task-field textarea:focus,
+.assignee-picker-header input:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgb(96 165 250 / 18%);
+}
+
+.assignee-picker-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
+  align-items: end;
+  gap: 12px;
+}
+
+.assignee-picker-header div {
+  display: grid;
+  gap: 5px;
+}
+
+.assignee-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.assignee-option {
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.assignee-option:hover {
+  border-color: #93c5fd;
+  background: #f8fbff;
+}
+
+.assignee-option.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.assignee-option span {
+  overflow: hidden;
+  color: #111827;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assignee-option small {
+  overflow: hidden;
+  color: #667085;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.task-detail-actions > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dirty-indicator {
+  color: #b45309;
+  font-size: 0.86rem;
+  font-weight: 900;
+}
+
 .roadmap-icon {
   display: inline-flex;
   align-items: center;
@@ -899,6 +1034,13 @@ h2 {
   gap: 18px;
 }
 
+.minutes-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
 .inline-loading,
 .slack-empty {
   display: flex;
@@ -1062,7 +1204,10 @@ h2 {
   .toolbar,
   .toolbar-actions,
   .room-title-row,
-  .join-panel {
+  .join-panel,
+  .minutes-panel-header,
+  .task-detail-actions,
+  .task-detail-actions > div {
     align-items: flex-start;
     flex-direction: column;
   }
@@ -1122,6 +1267,17 @@ h2 {
 
   .room-grid {
     grid-template-columns: 1fr;
+  }
+
+  .task-edit-grid,
+  .assignee-picker-header {
+    grid-template-columns: 1fr;
+  }
+
+  .task-detail-actions,
+  .task-detail-actions .primary-button,
+  .task-detail-actions .danger-button {
+    width: 100%;
   }
 
   .task-detail-header,

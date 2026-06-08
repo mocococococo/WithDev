@@ -2,7 +2,6 @@ import type { User } from 'firebase/auth';
 import {
   ArrowLeft,
   CalendarDays,
-  CheckCircle2,
   ChevronRight,
   CircleUserRound,
   ClipboardList,
@@ -17,15 +16,28 @@ import {
   PlayCircle,
   PlugZap,
   Plus,
+  Save,
   Send,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UserCheck,
   Users,
   Video,
 } from 'lucide-react';
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
+import {
+  deleteTask,
+  fetchTeamMembers,
+  fetchTeamTasks,
+  generateTeamTasks,
+  updateTask,
+  type TaskStatus,
+  type TaskUpdateInput,
+  type TeamMemberSummary,
+  type TeamTaskSummary,
+} from './api/tasks';
 import {
   createTeamMeeting,
   fetchMe,
@@ -50,11 +62,9 @@ import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthCont
 
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
 const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
-const tasksStoragePrefix = 'withdev.tasks.v1';
 const maxMinutesSourceLength = 50_000;
 
 type MeetingFilter = 'all' | MeetingStatus;
-type TaskStatus = 'todo' | 'doing' | 'done';
 type TaskFilter = 'all' | TaskStatus;
 type TeamView = 'meetings' | 'tasks';
 type SlackNotice = {
@@ -63,17 +73,7 @@ type SlackNotice = {
   message: string;
 } | null;
 
-type TeamTask = {
-  id: string;
-  team_id: string;
-  title: string;
-  status: TaskStatus;
-  assignee_uid: string | null;
-  assignee_name: string | null;
-  source_meeting_id: string | null;
-  due_date: number | null;
-  created_at: number;
-  updated_at: number;
+type TeamTask = TeamTaskSummary & {
   roadmap: TaskRoadmap;
 };
 
@@ -120,10 +120,6 @@ function shortSha(value: string) {
 
 function getDisplayName(user: User) {
   return user.displayName || user.email?.split('@')[0] || 'User';
-}
-
-function getTasksStorageKey(userId: string) {
-  return `${tasksStoragePrefix}.${userId}`;
 }
 
 function readSlackRedirectNotice(): SlackNotice {
@@ -182,160 +178,15 @@ function createPlaceholderRoadmap(taskTitle: string): TaskRoadmap {
   };
 }
 
-function parseRoadmapStep(value: unknown): RoadmapStep | null {
-  if (!value || typeof value !== 'object') return null;
-
-  const step = value as Partial<RoadmapStep>;
-  if (
-    typeof step.id !== 'string' ||
-    typeof step.title !== 'string' ||
-    typeof step.description !== 'string' ||
-    (step.status !== 'todo' && step.status !== 'doing' && step.status !== 'done')
-  ) {
-    return null;
-  }
-
+function withRoadmap(task: TeamTaskSummary): TeamTask {
   return {
-    id: step.id,
-    title: step.title,
-    description: step.description,
-    status: step.status,
+    ...task,
+    roadmap: createPlaceholderRoadmap(task.title),
   };
 }
 
-function parseTaskRoadmap(value: unknown, taskTitle: string): TaskRoadmap {
-  if (!value || typeof value !== 'object') return createPlaceholderRoadmap(taskTitle);
-
-  const roadmap = value as Partial<TaskRoadmap>;
-  if (typeof roadmap.overview !== 'string' || !Array.isArray(roadmap.steps)) {
-    return createPlaceholderRoadmap(taskTitle);
-  }
-
-  const steps = roadmap.steps
-    .map(parseRoadmapStep)
-    .filter((step): step is RoadmapStep => step !== null);
-
-  return steps.length > 0
-    ? { overview: roadmap.overview, steps }
-    : createPlaceholderRoadmap(taskTitle);
-}
-
-function createSeedTasks(teamId: string, user: User): TeamTask[] {
-  const now = Date.now();
-  const displayName = getDisplayName(user);
-
-  return [
-    {
-      id: 'demo_task_prepare_topics',
-      team_id: teamId,
-      title: '次回ミーティングで確認する論点を整理する',
-      status: 'doing',
-      assignee_uid: user.uid,
-      assignee_name: displayName,
-      source_meeting_id: 'demo_product_sync',
-      due_date: now + 1000 * 60 * 60 * 24 * 2,
-      created_at: now - 1000 * 60 * 60 * 3,
-      updated_at: now - 1000 * 60 * 24,
-      roadmap: createPlaceholderRoadmap('次回ミーティングで確認する論点を整理する'),
-    },
-    {
-      id: 'demo_task_review_minutes',
-      team_id: teamId,
-      title: '週次ふりかえりの議事録を確認する',
-      status: 'todo',
-      assignee_uid: user.uid,
-      assignee_name: displayName,
-      source_meeting_id: 'demo_weekly_review',
-      due_date: now + 1000 * 60 * 60 * 24 * 4,
-      created_at: now - 1000 * 60 * 60 * 20,
-      updated_at: now - 1000 * 60 * 60 * 20,
-      roadmap: createPlaceholderRoadmap('週次ふりかえりの議事録を確認する'),
-    },
-    {
-      id: 'demo_task_schedule_next',
-      team_id: teamId,
-      title: '次回ミーティング候補日を共有する',
-      status: 'todo',
-      assignee_uid: null,
-      assignee_name: null,
-      source_meeting_id: null,
-      due_date: now + 1000 * 60 * 60 * 24 * 7,
-      created_at: now - 1000 * 60 * 60 * 5,
-      updated_at: now - 1000 * 60 * 60 * 5,
-      roadmap: createPlaceholderRoadmap('次回ミーティング候補日を共有する'),
-    },
-    {
-      id: 'demo_task_done_summary',
-      team_id: teamId,
-      title: '初期デプロイ結果をチームに共有する',
-      status: 'done',
-      assignee_uid: user.uid,
-      assignee_name: displayName,
-      source_meeting_id: null,
-      due_date: now - 1000 * 60 * 60 * 24,
-      created_at: now - 1000 * 60 * 60 * 30,
-      updated_at: now - 1000 * 60 * 60 * 2,
-      roadmap: createPlaceholderRoadmap('初期デプロイ結果をチームに共有する'),
-    },
-  ];
-}
-
-function parseTeamTask(value: unknown): TeamTask | null {
-  if (!value || typeof value !== 'object') return null;
-
-  const task = value as Partial<TeamTask>;
-  if (
-    typeof task.id !== 'string' ||
-    typeof task.team_id !== 'string' ||
-    typeof task.title !== 'string' ||
-    (task.status !== 'todo' && task.status !== 'doing' && task.status !== 'done') ||
-    (typeof task.assignee_uid !== 'string' && task.assignee_uid !== null) ||
-    (typeof task.assignee_name !== 'string' && task.assignee_name !== null) ||
-    (typeof task.source_meeting_id !== 'string' && task.source_meeting_id !== null) ||
-    (typeof task.due_date !== 'number' && task.due_date !== null) ||
-    typeof task.created_at !== 'number' ||
-    typeof task.updated_at !== 'number'
-  ) {
-    return null;
-  }
-
-  return {
-    id: task.id,
-    team_id: task.team_id,
-    title: task.title,
-    status: task.status,
-    assignee_uid: task.assignee_uid,
-    assignee_name: task.assignee_name,
-    source_meeting_id: task.source_meeting_id,
-    due_date: task.due_date,
-    created_at: task.created_at,
-    updated_at: task.updated_at,
-    roadmap: parseTaskRoadmap(task.roadmap, task.title),
-  };
-}
-
-function loadTasks(user: User, teamId: string) {
-  if (typeof window === 'undefined') return createSeedTasks(teamId, user);
-
-  try {
-    const rawValue = window.localStorage.getItem(getTasksStorageKey(user.uid));
-    if (!rawValue) return createSeedTasks(teamId, user);
-
-    const parsedValue: unknown = JSON.parse(rawValue);
-    if (!Array.isArray(parsedValue)) return createSeedTasks(teamId, user);
-
-    const tasks = parsedValue
-      .map(parseTeamTask)
-      .filter((task): task is TeamTask => task !== null);
-    return tasks.length > 0 ? tasks : createSeedTasks(teamId, user);
-  } catch {
-    return createSeedTasks(teamId, user);
-  }
-}
-
-function saveTasks(userId: string, tasks: TeamTask[]) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(getTasksStorageKey(userId), JSON.stringify(tasks));
+function withRoadmaps(tasks: TeamTaskSummary[]) {
+  return tasks.map(withRoadmap);
 }
 
 function formatDateTime(value: number | null) {
@@ -356,6 +207,21 @@ function formatDate(value: number | null) {
     month: '2-digit',
     day: '2-digit',
   }).format(new Date(value));
+}
+
+function toDateInputValue(value: number | null) {
+  if (!value) return '';
+
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function toDatePayload(value: string) {
+  if (!value) return null;
+  return new Date(`${value}T00:00:00`).toISOString();
 }
 
 function LoadingScreen() {
@@ -603,8 +469,8 @@ function sortTasks(tasks: TeamTask[]) {
     const statusDiff = statusOrder[a.status] - statusOrder[b.status];
     if (statusDiff !== 0) return statusDiff;
 
-    const aDueDate = a.due_date ?? Number.MAX_SAFE_INTEGER;
-    const bDueDate = b.due_date ?? Number.MAX_SAFE_INTEGER;
+    const aDueDate = a.due_at ?? Number.MAX_SAFE_INTEGER;
+    const bDueDate = b.due_at ?? Number.MAX_SAFE_INTEGER;
     if (aDueDate !== bDueDate) return aDueDate - bDueDate;
 
     return b.updated_at - a.updated_at;
@@ -626,28 +492,40 @@ function TaskCard({ task, compact = false, onOpen }: TaskCardProps) {
     <button className={compact ? 'task-card compact' : 'task-card'} type="button" onClick={onOpen}>
       <div className="task-card-header">
         <TaskStatusBadge status={task.status} />
-        <span>{formatDate(task.due_date)}</span>
+        <span>{formatDate(task.due_at)}</span>
       </div>
       <h3>{task.title}</h3>
       <div className="task-card-meta">
         <span>{task.assignee_name ?? '未担当'}</span>
-        {task.source_meeting_id && <span>{task.source_meeting_id}</span>}
+        {task.source_minutes_id && <span>{task.source_minutes_id}</span>}
       </div>
     </button>
   );
 }
 
 type TaskSidebarProps = {
-  user: User;
+  currentUserId: string | null;
   tasks: TeamTask[];
+  isLoading: boolean;
+  error: string | null;
   onOpenTasks: () => void;
   onOpenTask: (taskId: string) => void;
 };
 
-function TaskSidebar({ user, tasks, onOpenTasks, onOpenTask }: TaskSidebarProps) {
+function TaskSidebar({
+  currentUserId,
+  tasks,
+  isLoading,
+  error,
+  onOpenTasks,
+  onOpenTask,
+}: TaskSidebarProps) {
   const myTasks = useMemo(
-    () => sortTasks(tasks.filter((task) => task.assignee_uid === user.uid)),
-    [tasks, user.uid],
+    () =>
+      currentUserId
+        ? sortTasks(tasks.filter((task) => task.assignee_user_id === currentUserId))
+        : [],
+    [currentUserId, tasks],
   );
 
   return (
@@ -674,7 +552,14 @@ function TaskSidebar({ user, tasks, onOpenTasks, onOpenTask }: TaskSidebarProps)
           </div>
         </div>
 
-        {myTasks.length > 0 ? (
+        {error && <p className="error-text">{error}</p>}
+
+        {isLoading ? (
+          <div className="inline-loading">
+            <Loader2 className="spin" size={18} />
+            <span>タスクを読み込み中</span>
+          </div>
+        ) : myTasks.length > 0 ? (
           <div className="task-list compact">
             {myTasks.map((task) => (
               <TaskCard key={task.id} task={task} compact onOpen={() => onOpenTask(task.id)} />
@@ -693,8 +578,11 @@ type MeetingListScreenProps = {
   team: UserTeamSummary;
   meetings: MeetingSummary[];
   tasks: TeamTask[];
+  currentUserId: string | null;
   isLoadingMeetings: boolean;
+  isLoadingTasks: boolean;
   error: string | null;
+  taskError: string | null;
   slackNotice: SlackNotice;
   onBackToTeams: () => void;
   onCreateMeeting: (title: string, initialTheme: string) => Promise<void>;
@@ -709,8 +597,11 @@ function MeetingListScreen({
   team,
   meetings,
   tasks,
+  currentUserId,
   isLoadingMeetings,
+  isLoadingTasks,
   error,
+  taskError,
   slackNotice,
   onBackToTeams,
   onCreateMeeting,
@@ -842,7 +733,14 @@ function MeetingListScreen({
           )}
         </div>
 
-        <TaskSidebar user={user} tasks={tasks} onOpenTasks={onOpenTasks} onOpenTask={onOpenTask} />
+        <TaskSidebar
+          currentUserId={currentUserId}
+          tasks={tasks}
+          isLoading={isLoadingTasks}
+          error={taskError}
+          onOpenTasks={onOpenTasks}
+          onOpenTask={onOpenTask}
+        />
       </div>
 
       <BuildFooter />
@@ -854,12 +752,23 @@ type TeamTaskScreenProps = {
   user: User;
   team: UserTeamSummary;
   tasks: TeamTask[];
+  isLoading: boolean;
+  error: string | null;
   onBackToMeetings: () => void;
   onOpenTask: (taskId: string) => void;
   onLogout: () => void;
 };
 
-function TeamTaskScreen({ user, team, tasks, onBackToMeetings, onOpenTask, onLogout }: TeamTaskScreenProps) {
+function TeamTaskScreen({
+  user,
+  team,
+  tasks,
+  isLoading,
+  error,
+  onBackToMeetings,
+  onOpenTask,
+  onLogout,
+}: TeamTaskScreenProps) {
   const [filter, setFilter] = useState<TaskFilter>('all');
   const visibleTasks = useMemo(() => {
     return sortTasks(tasks.filter((task) => filter === 'all' || task.status === filter));
@@ -900,7 +809,14 @@ function TeamTaskScreen({ user, team, tasks, onBackToMeetings, onOpenTask, onLog
         ))}
       </section>
 
-      {visibleTasks.length > 0 ? (
+      {error && <p className="error-text">{error}</p>}
+
+      {isLoading ? (
+        <section className="empty-state">
+          <Loader2 className="spin" size={42} />
+          <h2>読み込み中</h2>
+        </section>
+      ) : visibleTasks.length > 0 ? (
         <section className="task-list" aria-label="チーム全体のタスク一覧">
           {visibleTasks.map((task) => (
             <TaskCard key={task.id} task={task} onOpen={() => onOpenTask(task.id)} />
@@ -923,12 +839,104 @@ type TaskDetailScreenProps = {
   user: User;
   team: UserTeamSummary;
   task: TeamTask;
+  members: TeamMemberSummary[];
   onBack: () => void;
+  onSaveTask: (taskId: string, input: TaskUpdateInput) => Promise<void>;
+  onDeleteTask: (taskId: string) => Promise<void>;
   onLogout: () => void;
 };
 
-function TaskDetailScreen({ user, team, task, onBack, onLogout }: TaskDetailScreenProps) {
+function TaskDetailScreen({
+  user,
+  team,
+  task,
+  members,
+  onBack,
+  onSaveTask,
+  onDeleteTask,
+  onLogout,
+}: TaskDetailScreenProps) {
   const completedSteps = task.roadmap.steps.filter((step) => step.status === 'done').length;
+  const initialDraft = useMemo(
+    () => ({
+      title: task.title,
+      body: task.body,
+      status: task.status,
+      assignee_user_id: task.assignee_user_id,
+      assignee_name: task.assignee_name ?? '',
+      due_at: toDateInputValue(task.due_at),
+    }),
+    [task],
+  );
+  const [draft, setDraft] = useState(initialDraft);
+  const [memberQuery, setMemberQuery] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(initialDraft);
+  const filteredMembers = useMemo(() => {
+    const query = memberQuery.trim().toLowerCase();
+    if (!query) return members;
+
+    return members.filter((member) => {
+      const name = member.display_name.toLowerCase();
+      const email = member.email.toLowerCase();
+      return name.includes(query) || email.includes(query);
+    });
+  }, [memberQuery, members]);
+
+  useEffect(() => {
+    setDraft(initialDraft);
+    setMemberQuery('');
+    setError(null);
+  }, [initialDraft]);
+
+  const canSave = isDirty && draft.title.trim().length > 0 && draft.body.trim().length > 0 && !isSaving;
+
+  const handleSelectMember = (member: TeamMemberSummary | null) => {
+    setDraft((currentDraft) => ({
+      ...currentDraft,
+      assignee_user_id: member?.user_id ?? null,
+      assignee_name: member?.display_name ?? '',
+    }));
+  };
+
+  const handleSave = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSave) return;
+
+    setError(null);
+    setIsSaving(true);
+    try {
+      await onSaveTask(task.id, {
+        title: draft.title.trim(),
+        body: draft.body.trim(),
+        status: draft.status,
+        assignee_user_id: draft.assignee_user_id,
+        assignee_name: draft.assignee_user_id ? draft.assignee_name.trim() || null : null,
+        due_at: toDatePayload(draft.due_at),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'タスクの更新に失敗しました。');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (isDeleting) return;
+    const confirmed = window.confirm('このタスクを削除しますか？');
+    if (!confirmed) return;
+
+    setError(null);
+    setIsDeleting(true);
+    try {
+      await onDeleteTask(task.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'タスクの削除に失敗しました。');
+      setIsDeleting(false);
+    }
+  };
 
   return (
     <main className="app-layout">
@@ -948,14 +956,134 @@ function TaskDetailScreen({ user, team, task, onBack, onLogout }: TaskDetailScre
       <section className="task-detail">
         <div className="task-detail-header">
           <span className="roadmap-icon">
-            <Map size={26} />
+            <ClipboardList size={26} />
           </span>
           <div>
-            <p className="eyebrow">Roadmap</p>
-            <h2>完了までの道筋</h2>
-            <p>{task.roadmap.overview}</p>
+            <p className="eyebrow">Task</p>
+            <h2>タスク内容</h2>
+            <p>変更内容を確認してから保存できます。</p>
           </div>
         </div>
+
+        <form className="task-edit-form" onSubmit={handleSave}>
+          <div className="task-edit-grid">
+            <label className={draft.title !== initialDraft.title ? 'task-field dirty' : 'task-field'}>
+              <span>タイトル</span>
+              <input
+                value={draft.title}
+                onChange={(event) =>
+                  setDraft((currentDraft) => ({ ...currentDraft, title: event.target.value }))
+                }
+              />
+            </label>
+
+            <label className={draft.status !== initialDraft.status ? 'task-field dirty' : 'task-field'}>
+              <span>ステータス</span>
+              <select
+                value={draft.status}
+                onChange={(event) =>
+                  setDraft((currentDraft) => ({
+                    ...currentDraft,
+                    status: event.target.value as TaskStatus,
+                  }))
+                }
+              >
+                {(Object.keys(taskStatusLabels) as TaskStatus[]).map((statusKey) => (
+                  <option key={statusKey} value={statusKey}>
+                    {taskStatusLabels[statusKey]}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className={draft.due_at !== initialDraft.due_at ? 'task-field dirty' : 'task-field'}>
+              <span>期限</span>
+              <input
+                type="date"
+                value={draft.due_at}
+                onChange={(event) =>
+                  setDraft((currentDraft) => ({ ...currentDraft, due_at: event.target.value }))
+                }
+              />
+            </label>
+          </div>
+
+          <label className={draft.body !== initialDraft.body ? 'task-field dirty' : 'task-field'}>
+            <span>本文</span>
+            <textarea
+              value={draft.body}
+              onChange={(event) =>
+                setDraft((currentDraft) => ({ ...currentDraft, body: event.target.value }))
+              }
+            />
+          </label>
+
+          <section
+            className={
+              draft.assignee_user_id !== initialDraft.assignee_user_id
+                ? 'assignee-picker dirty'
+                : 'assignee-picker'
+            }
+          >
+            <div className="assignee-picker-header">
+              <div>
+                <span>担当者</span>
+                <strong>{draft.assignee_name || '未担当'}</strong>
+              </div>
+              <input
+                value={memberQuery}
+                onChange={(event) => setMemberQuery(event.target.value)}
+                placeholder="メンバー名またはメールで検索"
+              />
+            </div>
+            <div className="assignee-options">
+              <button
+                className={!draft.assignee_user_id ? 'assignee-option active' : 'assignee-option'}
+                type="button"
+                onClick={() => handleSelectMember(null)}
+              >
+                <span>未担当</span>
+                <small>担当者なし</small>
+              </button>
+              {filteredMembers.map((member) => (
+                <button
+                  className={
+                    draft.assignee_user_id === member.user_id
+                      ? 'assignee-option active'
+                      : 'assignee-option'
+                  }
+                  key={member.user_id}
+                  type="button"
+                  onClick={() => handleSelectMember(member)}
+                >
+                  <span>{member.display_name || member.email}</span>
+                  <small>{member.email}</small>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {error && <p className="error-text">{error}</p>}
+
+          <div className="task-detail-actions">
+            <button
+              className="danger-button"
+              type="button"
+              onClick={() => void handleDelete()}
+              disabled={isDeleting}
+            >
+              {isDeleting ? <Loader2 className="spin" size={18} /> : <Trash2 size={18} />}
+              {isDeleting ? '削除中' : 'タスクを削除'}
+            </button>
+            <div>
+              {isDirty && <span className="dirty-indicator">未保存の変更があります</span>}
+              <button className="primary-button" type="submit" disabled={!canSave}>
+                {isSaving ? <Loader2 className="spin" size={18} /> : <Save size={18} />}
+                {isSaving ? '保存中' : '変更を保存'}
+              </button>
+            </div>
+          </div>
+        </form>
 
         <div className="task-detail-grid">
           <div>
@@ -970,11 +1098,11 @@ function TaskDetailScreen({ user, team, task, onBack, onLogout }: TaskDetailScre
           </div>
           <div>
             <span>期限</span>
-            <strong>{formatDate(task.due_date)}</strong>
+            <strong>{formatDate(task.due_at)}</strong>
           </div>
           <div>
-            <span>元ミーティング</span>
-            <strong>{task.source_meeting_id ?? '-'}</strong>
+            <span>元議事録</span>
+            <strong>{task.source_minutes_id ?? '-'}</strong>
           </div>
           <div>
             <span>作成日時</span>
@@ -990,11 +1118,12 @@ function TaskDetailScreen({ user, team, task, onBack, onLogout }: TaskDetailScre
           <div className="roadmap-panel-header">
             <div className="section-title-row">
               <span className="section-icon">
-                <CheckCircle2 size={22} />
+                <Map size={22} />
               </span>
               <div>
-                <p className="eyebrow">Steps</p>
-                <h2>進め方</h2>
+                <p className="eyebrow">Roadmap</p>
+                <h2>完了までの道筋</h2>
+                <p>{task.roadmap.overview}</p>
               </div>
             </div>
             <span className="roadmap-progress">
@@ -1381,15 +1510,36 @@ function SlackPostPanel({ user, team, meeting }: SlackPostPanelProps) {
   );
 }
 
+type MeetingMinutesPanelProps = {
+  user: User;
+  team: UserTeamSummary;
+  meeting: MeetingSummary;
+  onGenerateTasks: (minutesId: string) => Promise<void>;
+};
+
 function MeetingMinutesPanel({
   user,
   team,
   meeting,
-}: {
-  user: User;
-  team: UserTeamSummary;
-  meeting: MeetingSummary;
-}) {
+  onGenerateTasks,
+}: MeetingMinutesPanelProps) {
+  const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
+  const [taskGenerationError, setTaskGenerationError] = useState<string | null>(null);
+
+  const handleGenerateTasks = async () => {
+    if (!meeting.minutes_id || isGeneratingTasks) return;
+
+    setTaskGenerationError(null);
+    setIsGeneratingTasks(true);
+    try {
+      await onGenerateTasks(meeting.minutes_id);
+    } catch (err) {
+      setTaskGenerationError(err instanceof Error ? err.message : 'タスク生成に失敗しました。');
+    } finally {
+      setIsGeneratingTasks(false);
+    }
+  };
+
   if (!meeting.minutes) {
     return (
       <section className="minutes-panel">
@@ -1409,17 +1559,29 @@ function MeetingMinutesPanel({
 
   return (
     <section className="minutes-panel">
-      <div className="section-title-row">
-        <span className="section-icon">
-          <FileText size={22} />
-        </span>
-        <div>
-          <p className="eyebrow">Minutes</p>
-          <h2>議事録</h2>
+      <div className="minutes-panel-header">
+        <div className="section-title-row">
+          <span className="section-icon">
+            <FileText size={22} />
+          </span>
+          <div>
+            <p className="eyebrow">Minutes</p>
+            <h2>議事録</h2>
+          </div>
         </div>
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={() => void handleGenerateTasks()}
+          disabled={!meeting.minutes_id || isGeneratingTasks}
+        >
+          {isGeneratingTasks ? <Loader2 className="spin" size={18} /> : <ClipboardList size={18} />}
+          {isGeneratingTasks ? '生成中' : 'タスクを生成'}
+        </button>
       </div>
 
       <p className="minutes-body">{meeting.minutes}</p>
+      {taskGenerationError && <p className="error-text">{taskGenerationError}</p>}
       <SlackPostPanel user={user} team={team} meeting={meeting} />
     </section>
   );
@@ -1431,6 +1593,7 @@ type MeetingRoomScreenProps = {
   meeting: MeetingSummary;
   onBackToList: () => void;
   onSaveMinutes: (meetingId: string, minutes: MeetingMinutesSummary) => void;
+  onGenerateTasks: (minutesId: string) => Promise<void>;
 };
 
 function MeetingRoomScreen({
@@ -1439,6 +1602,7 @@ function MeetingRoomScreen({
   meeting,
   onBackToList,
   onSaveMinutes,
+  onGenerateTasks,
 }: MeetingRoomScreenProps) {
   const isActive = meeting.status === 'active';
   const [hasJoined, setHasJoined] = useState(false);
@@ -1508,12 +1672,22 @@ function MeetingRoomScreen({
             </button>
           </section>
         ) : (
-          <MeetingMinutesPanel user={user} team={team} meeting={meeting} />
+          <MeetingMinutesPanel
+            user={user}
+            team={team}
+            meeting={meeting}
+            onGenerateTasks={onGenerateTasks}
+          />
         )}
 
         <MinutesGeneratorPanel user={user} team={team} meeting={meeting} onGenerated={onSaveMinutes} />
         {isActive && meeting.minutes && (
-          <MeetingMinutesPanel user={user} team={team} meeting={meeting} />
+          <MeetingMinutesPanel
+            user={user}
+            team={team}
+            meeting={meeting}
+            onGenerateTasks={onGenerateTasks}
+          />
         )}
       </section>
     </main>
@@ -1539,10 +1713,13 @@ type WorkspaceAppProps = {
 function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const { logout } = useAuth();
   const [teams, setTeams] = useState<UserTeamSummary[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
+  const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [meetingError, setMeetingError] = useState<string | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
   const [slackNotice, setSlackNotice] = useState<SlackNotice>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
@@ -1550,6 +1727,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const [selectedTeamView, setSelectedTeamView] = useState<TeamView>('meetings');
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [tasks, setTasks] = useState<TeamTask[]>([]);
+  const [teamMembers, setTeamMembers] = useState<TeamMemberSummary[]>([]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1563,12 +1741,16 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setSelectedMeetingId(null);
     setSelectedTaskId(null);
     setSelectedTeamView('meetings');
+    setCurrentUserId(null);
     setMeetings([]);
     setTasks([]);
+    setTeamMembers([]);
 
     void fetchMe(currentUser)
-      .then((nextTeams) => {
+      .then((context) => {
         if (isCancelled) return;
+        const nextTeams = context.teams;
+        setCurrentUserId(context.user.id);
         setTeams(nextTeams);
         if (
           redirectNotice?.teamId &&
@@ -1581,6 +1763,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       .catch((err) => {
         if (isCancelled) return;
         setTeams([]);
+        setCurrentUserId(null);
         setWorkspaceError(err instanceof Error ? err.message : 'ユーザー初期化に失敗しました。');
       })
       .finally(() => {
@@ -1600,6 +1783,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     if (!selectedTeamId) {
       setMeetings([]);
       setTasks([]);
+      setTeamMembers([]);
       return () => {
         isCancelled = true;
       };
@@ -1608,9 +1792,10 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setSelectedMeetingId(null);
     setSelectedTaskId(null);
     setSelectedTeamView('meetings');
-    setTasks(loadTasks(currentUser, selectedTeamId));
     setIsLoadingMeetings(true);
+    setIsLoadingTasks(true);
     setMeetingError(null);
+    setTaskError(null);
 
     void fetchTeamMeetings(currentUser, selectedTeamId)
       .then((nextMeetings) => {
@@ -1630,15 +1815,33 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         }
       });
 
+    void Promise.all([
+      fetchTeamTasks(currentUser, selectedTeamId),
+      fetchTeamMembers(currentUser, selectedTeamId),
+    ])
+      .then(([nextTasks, nextMembers]) => {
+        if (!isCancelled) {
+          setTasks(withRoadmaps(nextTasks));
+          setTeamMembers(nextMembers);
+        }
+      })
+      .catch((err) => {
+        if (!isCancelled) {
+          setTasks([]);
+          setTeamMembers([]);
+          setTaskError(err instanceof Error ? err.message : 'タスク一覧の取得に失敗しました。');
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoadingTasks(false);
+        }
+      });
+
     return () => {
       isCancelled = true;
     };
   }, [currentUser, selectedTeamId]);
-
-  useEffect(() => {
-    if (!selectedTeamId) return;
-    saveTasks(currentUser.uid, tasks);
-  }, [currentUser.uid, selectedTeamId, tasks]);
 
   const selectedTeam = teams.find((team) => team.team_id === selectedTeamId) ?? null;
   const selectedMeeting = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null;
@@ -1711,6 +1914,33 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     );
   };
 
+  const handleGenerateTasksFromMinutes = async (minutesId: string) => {
+    if (!selectedTeam) return;
+
+    setTaskError(null);
+    const nextTasks = await generateTeamTasks(currentUser, selectedTeam.team_id, minutesId);
+    setTasks(withRoadmaps(nextTasks));
+    setSelectedMeetingId(null);
+    setSelectedTaskId(null);
+    setSelectedTeamView('tasks');
+  };
+
+  const handleSaveTask = async (taskId: string, input: TaskUpdateInput) => {
+    setTaskError(null);
+    const updatedTask = await updateTask(currentUser, taskId, input);
+    setTasks((currentTasks) =>
+      currentTasks.map((task) => (task.id === taskId ? withRoadmap(updatedTask) : task)),
+    );
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    setTaskError(null);
+    await deleteTask(currentUser, taskId);
+    setTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId));
+    setSelectedTaskId(null);
+    setSelectedTeamView('tasks');
+  };
+
   const handleLogout = () => {
     void logout();
   };
@@ -1741,7 +1971,10 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         user={currentUser}
         team={selectedTeam}
         task={selectedTask}
+        members={teamMembers}
         onBack={() => setSelectedTaskId(null)}
+        onSaveTask={handleSaveTask}
+        onDeleteTask={handleDeleteTask}
         onLogout={handleLogout}
       />
     );
@@ -1755,6 +1988,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         meeting={selectedMeeting}
         onBackToList={() => setSelectedMeetingId(null)}
         onSaveMinutes={handleSaveMinutes}
+        onGenerateTasks={handleGenerateTasksFromMinutes}
       />
     );
   }
@@ -1765,6 +1999,8 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         user={currentUser}
         team={selectedTeam}
         tasks={teamTasks}
+        isLoading={isLoadingTasks}
+        error={taskError}
         onBackToMeetings={() => setSelectedTeamView('meetings')}
         onOpenTask={(taskId) => {
           setSelectedMeetingId(null);
@@ -1782,8 +2018,11 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         team={selectedTeam}
         meetings={teamMeetings}
         tasks={teamTasks}
+        currentUserId={currentUserId}
         isLoadingMeetings={isLoadingMeetings}
+        isLoadingTasks={isLoadingTasks}
         error={meetingError}
+        taskError={taskError}
         slackNotice={
           slackNotice &&
           (!slackNotice.teamId || slackNotice.teamId === selectedTeam.team_id)

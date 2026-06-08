@@ -11,6 +11,19 @@ export type UserTeamSummary = {
   member_count: number;
 };
 
+export type WorkspaceUserSummary = {
+  id: string;
+  firebase_uid: string;
+  email: string;
+  display_name: string;
+  photo_url: string | null;
+};
+
+export type WorkspaceContext = {
+  user: WorkspaceUserSummary;
+  teams: UserTeamSummary[];
+};
+
 export type MeetingSummary = {
   id: string;
   team_id: string;
@@ -41,6 +54,7 @@ type ApiTeam = {
 };
 
 type ApiMeResponse = {
+  user?: WorkspaceUserSummary;
   teams?: ApiTeam[];
 };
 
@@ -78,7 +92,7 @@ type ApiMinutesResponse = {
   minutes?: ApiMinutes;
 };
 
-export async function fetchMe(user: User): Promise<UserTeamSummary[]> {
+export async function fetchMe(user: User): Promise<WorkspaceContext> {
   const response = await fetchWithAuth(user, '/api/me');
   if (!response.ok) {
     const detail = await readErrorDetail(response);
@@ -86,16 +100,19 @@ export async function fetchMe(user: User): Promise<UserTeamSummary[]> {
   }
 
   const payload = (await response.json()) as ApiMeResponse;
-  if (!Array.isArray(payload.teams)) {
+  if (!payload.user || !Array.isArray(payload.teams)) {
     throw new Error('ユーザー初期化APIのレスポンスを読み取れませんでした。');
   }
 
-  return payload.teams.map((team) => ({
-    team_id: team.id,
-    name: team.name,
-    role: team.role,
-    member_count: 1,
-  }));
+  return {
+    user: payload.user,
+    teams: payload.teams.map((team) => ({
+      team_id: team.id,
+      name: team.name,
+      role: team.role,
+      member_count: 1,
+    })),
+  };
 }
 
 export async function fetchTeamMeetings(user: User, teamId: string): Promise<MeetingSummary[]> {

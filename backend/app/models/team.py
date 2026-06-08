@@ -17,6 +17,7 @@ class Team(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     members = relationship("TeamMember", back_populates="team")
     meetings = relationship("Meeting", back_populates="team")
+    tasks = relationship("Task", back_populates="team")
     slack_connections = relationship("SlackConnection", back_populates="team")
     slack_oauth_states = relationship("SlackOAuthState", back_populates="team")
 
