@@ -14,7 +14,13 @@ from app.core.config import get_settings
 from app.db.session import get_db_session
 from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
-from app.models.slack import SlackConnection, SlackOAuthState, SlackPostLog
+from app.models.slack import (
+    AiboardSlackConnection,
+    AiboardSlackOAuthState,
+    SlackConnection,
+    SlackOAuthState,
+    SlackPostLog,
+)
 from app.services.slack_post_service import (
     SlackConnectionNotFoundError,
     SlackPostError,
@@ -183,8 +189,19 @@ async def slack_oauth_callback(
     session: AsyncSession = Depends(get_db_session),
 ) -> RedirectResponse:
     oauth_state = await _get_oauth_state(session=session, state=state)
-    team_id = oauth_state.team_id if oauth_state is not None else None
+    aiboard_oauth_state = None
+    if oauth_state is None:
+        aiboard_oauth_state = await _get_aiboard_oauth_state(session=session, state=state)
 
+    if aiboard_oauth_state is not None:
+        return await _handle_aiboard_slack_oauth_callback(
+            session=session,
+            oauth_state=aiboard_oauth_state,
+            code=code,
+            error=error,
+        )
+
+    team_id = oauth_state.team_id if oauth_state is not None else None
     if error:
         return _redirect_to_frontend("/slack/error", team_id=team_id, reason=error)
     if not code or oauth_state is None:
@@ -302,6 +319,87 @@ async def _get_oauth_state(
     return result.scalar_one_or_none()
 
 
+async def _get_aiboard_oauth_state(
+    *,
+    session: AsyncSession,
+    state: str | None,
+) -> AiboardSlackOAuthState | None:
+    if not state:
+        return None
+    result = await session.execute(
+        select(AiboardSlackOAuthState).where(AiboardSlackOAuthState.state == state)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _handle_aiboard_slack_oauth_callback(
+    *,
+    session: AsyncSession,
+    oauth_state: AiboardSlackOAuthState,
+    code: str | None,
+    error: str | None,
+) -> RedirectResponse:
+    meeting_id = oauth_state.aiboard_meeting_id
+
+    if error:
+        return _redirect_to_frontend(
+            "/slack/aiboard/error",
+            aiboard_meeting_id=meeting_id,
+            reason=error,
+        )
+    if not code:
+        return _redirect_to_frontend(
+            "/slack/aiboard/error",
+            aiboard_meeting_id=meeting_id,
+            reason="invalid_state",
+        )
+    if oauth_state.consumed_at is not None:
+        return _redirect_to_frontend(
+            "/slack/aiboard/error",
+            aiboard_meeting_id=meeting_id,
+            reason="state_consumed",
+        )
+    if _is_expired(oauth_state.expires_at):
+        return _redirect_to_frontend(
+            "/slack/aiboard/error",
+            aiboard_meeting_id=meeting_id,
+            reason="state_expired",
+        )
+    if not settings.slack_client_id or not settings.slack_client_secret or not settings.slack_redirect_uri:
+        return _redirect_to_frontend(
+            "/slack/aiboard/error",
+            aiboard_meeting_id=meeting_id,
+            reason="not_configured",
+        )
+
+    try:
+        token = await exchange_oauth_code(
+            client_id=settings.slack_client_id,
+            client_secret=settings.slack_client_secret,
+            code=code,
+            redirect_uri=settings.slack_redirect_uri,
+        )
+    except SlackApiError:
+        return _redirect_to_frontend(
+            "/slack/aiboard/error",
+            aiboard_meeting_id=meeting_id,
+            reason="oauth_failed",
+        )
+
+    await _save_aiboard_slack_connection(
+        session=session,
+        meeting_id=meeting_id,
+        slack_team_id=token.slack_team_id,
+        slack_team_name=token.slack_team_name,
+        bot_user_id=token.bot_user_id,
+        bot_access_token=token.access_token,
+    )
+    oauth_state.consumed_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    return _redirect_to_frontend("/slack/aiboard/success", aiboard_meeting_id=meeting_id)
+
+
 async def _save_slack_connection(
     *,
     session: AsyncSession,
@@ -328,6 +426,50 @@ async def _save_slack_connection(
     if existing is None:
         existing = SlackConnection(
             team_id=team_id,
+            slack_team_id=slack_team_id,
+            slack_team_name=slack_team_name,
+            bot_user_id=bot_user_id,
+            bot_access_token=bot_access_token,
+            status="active",
+            is_deleted=False,
+        )
+        session.add(existing)
+    else:
+        existing.slack_team_name = slack_team_name
+        existing.bot_user_id = bot_user_id
+        existing.bot_access_token = bot_access_token
+        existing.status = "active"
+        existing.is_deleted = False
+
+    return existing
+
+
+async def _save_aiboard_slack_connection(
+    *,
+    session: AsyncSession,
+    meeting_id: UUID,
+    slack_team_id: str,
+    slack_team_name: str | None,
+    bot_user_id: str | None,
+    bot_access_token: str,
+) -> AiboardSlackConnection:
+    result = await session.execute(
+        select(AiboardSlackConnection).where(
+            AiboardSlackConnection.aiboard_meeting_id == meeting_id,
+            AiboardSlackConnection.is_deleted.is_(False),
+        )
+    )
+    existing: AiboardSlackConnection | None = None
+    for connection in result.scalars().all():
+        if connection.slack_team_id == slack_team_id:
+            existing = connection
+        else:
+            connection.status = "revoked"
+            connection.is_deleted = True
+
+    if existing is None:
+        existing = AiboardSlackConnection(
+            aiboard_meeting_id=meeting_id,
             slack_team_id=slack_team_id,
             slack_team_name=slack_team_name,
             bot_user_id=bot_user_id,
@@ -386,11 +528,14 @@ def _redirect_to_frontend(
     path: str,
     *,
     team_id: UUID | None = None,
+    aiboard_meeting_id: UUID | None = None,
     reason: str | None = None,
 ) -> RedirectResponse:
     params: dict[str, str] = {}
     if team_id is not None:
         params["team_id"] = str(team_id)
+    if aiboard_meeting_id is not None:
+        params["meeting_id"] = str(aiboard_meeting_id)
     if reason:
         params["reason"] = reason
 

@@ -149,6 +149,52 @@ function readSlackRedirectNotice(): SlackNotice {
   };
 }
 
+function getAiboardSlackRedirectState() {
+  if (typeof window === 'undefined') return null;
+
+  const { pathname, search } = window.location;
+  if (pathname !== '/slack/aiboard/success' && pathname !== '/slack/aiboard/error') {
+    return null;
+  }
+
+  const params = new URLSearchParams(search);
+  return {
+    isSuccess: pathname === '/slack/aiboard/success',
+    meetingId: params.get('meeting_id'),
+    reason: params.get('reason'),
+  };
+}
+
+function AiboardSlackResultScreen() {
+  const result = getAiboardSlackRedirectState();
+  const isSuccess = result?.isSuccess ?? false;
+
+  return (
+    <main className="auth-layout">
+      <section className="login-hero" aria-labelledby="aiboard-slack-result-title">
+        <div className="login-brand" aria-label="WithDev">
+          <span className="brand-mark">
+            <PlugZap size={24} />
+          </span>
+          <span>WithDev</span>
+        </div>
+        <p className="eyebrow">Aiboard Slack</p>
+        <h1 id="aiboard-slack-result-title">
+          {isSuccess ? 'Slack連携が完了しました' : 'Slack連携に失敗しました'}
+        </h1>
+        <p className="subtle-copy">
+          {isSuccess
+            ? 'Aiboard の画面に戻って、チャンネル一覧を再読み込みしてください。'
+            : `Aiboard の画面に戻って、もう一度Slack連携を試してください。${
+                result?.reason ? ` (${result.reason})` : ''
+              }`}
+        </p>
+        {result?.meetingId && <p className="subtle-copy">{result.meetingId}</p>}
+      </section>
+    </main>
+  );
+}
+
 function createPlaceholderRoadmap(taskTitle: string): TaskRoadmap {
   return {
     overview: `「${taskTitle}」を進めるための仮ロードマップです。今はフロントエンドだけで表示確認するための内容ですが、将来的にはバックエンドからタスクごとのロードマップを取得して差し替えます。`,
@@ -2249,6 +2295,10 @@ function WithDevApp() {
 }
 
 function App() {
+  if (getAiboardSlackRedirectState()) {
+    return <AiboardSlackResultScreen />;
+  }
+
   return (
     <AuthProvider>
       <WithDevApp />
