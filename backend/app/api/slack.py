@@ -20,6 +20,7 @@ from app.services.slack_post_service import (
     SlackPostError,
     create_slack_post_for_minutes,
     get_active_slack_connection,
+    get_slack_channel_name,
 )
 from app.services.slack_service import (
     SLACK_AUTHORIZE_URL,
@@ -48,6 +49,23 @@ class SlackChannelBody(BaseModel):
 
 class SlackChannelListResponse(BaseModel):
     channels: list[SlackChannelBody]
+
+
+class SlackConnectionBody(BaseModel):
+    connected: bool
+    slack_team_id: str | None = None
+    slack_team_name: str | None = None
+    default_channel_id: str | None = None
+    default_channel_name: str | None = None
+
+
+class SlackConnectionResponse(BaseModel):
+    connection: SlackConnectionBody
+
+
+class SlackDefaultChannelRequest(BaseModel):
+    channel_id: str | None = None
+    channel_name: str | None = None
 
 
 class SlackPostRequest(BaseModel):
@@ -100,6 +118,61 @@ async def start_slack_oauth(
         }
     )
     return SlackOAuthStartResponse(url=f"{SLACK_AUTHORIZE_URL}?{query}")
+
+
+@router.get("/teams/{team_id}/slack/connection", response_model=SlackConnectionResponse)
+async def get_slack_connection(
+    team_id: UUID,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> SlackConnectionResponse:
+    await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
+
+    try:
+        connection = await get_active_slack_connection(session=session, team_id=team_id)
+    except SlackConnectionNotFoundError:
+        return SlackConnectionResponse(connection=SlackConnectionBody(connected=False))
+
+    return SlackConnectionResponse(connection=_slack_connection_body(connection))
+
+
+@router.patch("/teams/{team_id}/slack/default-channel", response_model=SlackConnectionResponse)
+async def update_slack_default_channel(
+    team_id: UUID,
+    request: SlackDefaultChannelRequest,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> SlackConnectionResponse:
+    await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
+
+    channel_id = (request.channel_id or "").strip()
+    if not channel_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="channel_id is required",
+        )
+
+    try:
+        connection = await get_active_slack_connection(session=session, team_id=team_id)
+    except SlackConnectionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="slack connection not found",
+        ) from exc
+
+    channel_name = (request.channel_name or "").strip() or None
+    if channel_name is None:
+        channel_name = await get_slack_channel_name(
+            bot_access_token=connection.bot_access_token,
+            channel_id=channel_id,
+        )
+
+    connection.default_channel_id = channel_id
+    connection.default_channel_name = channel_name
+    await session.commit()
+    await session.refresh(connection)
+
+    return SlackConnectionResponse(connection=_slack_connection_body(connection))
 
 
 @router.get("/slack/oauth/callback")
@@ -345,4 +418,14 @@ def _slack_post_body(post_log: SlackPostLog) -> SlackPostBody:
         slack_ts=post_log.slack_ts,
         status=post_log.status,
         created_at=post_log.created_at,
+    )
+
+
+def _slack_connection_body(connection: SlackConnection) -> SlackConnectionBody:
+    return SlackConnectionBody(
+        connected=True,
+        slack_team_id=connection.slack_team_id,
+        slack_team_name=connection.slack_team_name,
+        default_channel_id=connection.default_channel_id,
+        default_channel_name=connection.default_channel_name,
     )

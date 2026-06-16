@@ -17,6 +17,8 @@ class Settings:
     slack_client_secret: str | None
     slack_redirect_uri: str | None
     frontend_base_url: str
+    aiboard_allowed_service_account: str | None
+    aiboard_expected_audience: str | None
 
     def __init__(self) -> None:
         self.app_name = os.getenv("APP_NAME", "WithDev Backend")
@@ -31,6 +33,8 @@ class Settings:
         self.slack_client_secret = os.getenv("SLACK_CLIENT_SECRET")
         self.slack_redirect_uri = os.getenv("SLACK_REDIRECT_URI")
         self.frontend_base_url = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:5173")
+        self.aiboard_allowed_service_account = os.getenv("AIBOARD_ALLOWED_SERVICE_ACCOUNT")
+        self.aiboard_expected_audience = os.getenv("AIBOARD_EXPECTED_AUDIENCE")
 
 
 def _parse_csv_env(name: str) -> list[str]:

@@ -18,8 +18,20 @@ export type SlackPost = {
   created_at: string;
 };
 
+export type SlackConnectionStatus = {
+  connected: boolean;
+  slack_team_id: string | null;
+  slack_team_name: string | null;
+  default_channel_id: string | null;
+  default_channel_name: string | null;
+};
+
 type SlackOAuthStartResponse = {
   url?: string;
+};
+
+type SlackConnectionResponse = {
+  connection?: SlackConnectionStatus;
 };
 
 type SlackChannelsResponse = {
@@ -58,6 +70,23 @@ export async function startSlackOAuth(user: User, teamId: string): Promise<strin
   return payload.url;
 }
 
+export async function fetchSlackConnection(
+  user: User,
+  teamId: string,
+): Promise<SlackConnectionStatus> {
+  const response = await fetchWithAuth(user, `/api/teams/${teamId}/slack/connection`);
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(toSlackError(detail, response.status));
+  }
+
+  const payload = (await response.json()) as SlackConnectionResponse;
+  if (!payload.connection) {
+    throw new Error('Slack連携状態を取得できませんでした。');
+  }
+  return payload.connection;
+}
+
 export async function fetchSlackChannels(user: User, teamId: string): Promise<SlackChannel[]> {
   const response = await fetchWithAuth(user, `/api/teams/${teamId}/slack/channels`);
   if (!response.ok) {
@@ -70,6 +99,31 @@ export async function fetchSlackChannels(user: User, teamId: string): Promise<Sl
     throw new Error('Slackチャンネル一覧を取得できませんでした。');
   }
   return payload.channels;
+}
+
+export async function updateSlackDefaultChannel(
+  user: User,
+  teamId: string,
+  channelId: string,
+  channelName: string | null,
+): Promise<SlackConnectionStatus> {
+  const response = await fetchWithAuth(user, `/api/teams/${teamId}/slack/default-channel`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      channel_id: channelId,
+      channel_name: channelName,
+    }),
+  });
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(toSlackError(detail, response.status));
+  }
+
+  const payload = (await response.json()) as SlackConnectionResponse;
+  if (!payload.connection) {
+    throw new Error('Slack既定チャンネルを保存できませんでした。');
+  }
+  return payload.connection;
 }
 
 export async function postMinutesToSlack(

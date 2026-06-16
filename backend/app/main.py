@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.aiboard import router as aiboard_router
 from app.api.me import router as me_router
 from app.api.meetings import router as meetings_router
 from app.api.minutes import router as minutes_router
@@ -27,6 +28,7 @@ app.include_router(me_router, prefix="/api", tags=["me"])
 app.include_router(meetings_router, prefix="/api", tags=["meetings"])
 app.include_router(slack_router, prefix="/api", tags=["slack"])
 app.include_router(tasks_router, prefix="/api", tags=["tasks"])
+app.include_router(aiboard_router, prefix="/api/external/aiboard", tags=["aiboard"])
 
 
 @app.get("/health")

@@ -25,6 +25,8 @@ class SlackConnection(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     slack_team_name: Mapped[str | None] = mapped_column(String(255))
     bot_user_id: Mapped[str | None] = mapped_column(String(64))
     bot_access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    default_channel_id: Mapped[str | None] = mapped_column(String(64))
+    default_channel_name: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

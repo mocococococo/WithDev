@@ -392,6 +392,13 @@ h2 {
   min-width: 0;
 }
 
+.team-side-panel {
+  position: sticky;
+  top: 24px;
+  display: grid;
+  gap: 14px;
+}
+
 .toolbar p,
 .form-header p,
 .empty-state p,
@@ -526,19 +533,29 @@ h2 {
 }
 
 .task-sidebar {
-  position: sticky;
-  top: 24px;
   display: grid;
   gap: 14px;
 }
 
 .task-nav-button,
 .my-task-panel,
+.slack-settings-panel,
 .task-card {
   border: 1px solid #e4e7ec;
   border-radius: 8px;
   background: #ffffff;
   color: #111827;
+}
+
+.slack-settings-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.slack-settings-body {
+  display: grid;
+  gap: 10px;
 }
 
 .task-nav-button {
@@ -1225,6 +1242,7 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .team-side-panel,
   .task-sidebar {
     position: static;
   }
@@ -1252,6 +1270,7 @@ h2 {
   .toolbar-actions .secondary-button,
   .slack-empty,
   .slack-select-row,
+  .slack-select-row .secondary-button,
   .slack-select-row .primary-button {
     width: 100%;
   }

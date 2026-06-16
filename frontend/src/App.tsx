@@ -52,11 +52,14 @@ import {
   type UserTeamSummary,
 } from './api/workspace';
 import {
+  fetchSlackConnection,
   fetchSlackChannels,
   generateMeetingMinutesToSlack,
   postMinutesToSlack,
   startSlackOAuth,
+  updateSlackDefaultChannel,
   type SlackChannel,
+  type SlackConnectionStatus,
 } from './api/slack';
 import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthContext';
 
@@ -573,6 +576,174 @@ function TaskSidebar({
   );
 }
 
+type SlackSettingsPanelProps = {
+  user: User;
+  team: UserTeamSummary;
+};
+
+function SlackSettingsPanel({ user, team }: SlackSettingsPanelProps) {
+  const [connection, setConnection] = useState<SlackConnectionStatus | null>(null);
+  const [channels, setChannels] = useState<SlackChannel[]>([]);
+  const [selectedChannelId, setSelectedChannelId] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isStartingSlack, setIsStartingSlack] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const selectedChannel = channels.find((channel) => channel.id === selectedChannelId) ?? null;
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    setIsLoading(true);
+    setError(null);
+    setSuccess(null);
+    setConnection(null);
+    setChannels([]);
+    setSelectedChannelId('');
+
+    void fetchSlackConnection(user, team.team_id)
+      .then(async (nextConnection) => {
+        if (isCancelled) return;
+        setConnection(nextConnection);
+
+        if (!nextConnection.connected) {
+          return;
+        }
+
+        const nextChannels = await fetchSlackChannels(user, team.team_id);
+        if (isCancelled) return;
+        setChannels(nextChannels);
+        setSelectedChannelId(
+          nextConnection.default_channel_id || nextChannels[0]?.id || '',
+        );
+      })
+      .catch((err) => {
+        if (!isCancelled) {
+          setError(err instanceof Error ? err.message : 'Slack連携状態を取得できませんでした。');
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [team.team_id, user]);
+
+  const handleStartSlackOAuth = async () => {
+    setError(null);
+    setSuccess(null);
+    setIsStartingSlack(true);
+    try {
+      const url = await startSlackOAuth(user, team.team_id);
+      window.location.assign(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Slack連携を開始できませんでした。');
+      setIsStartingSlack(false);
+    }
+  };
+
+  const handleSaveDefaultChannel = async () => {
+    if (!selectedChannelId || isSaving) return;
+
+    setError(null);
+    setSuccess(null);
+    setIsSaving(true);
+    try {
+      const nextConnection = await updateSlackDefaultChannel(
+        user,
+        team.team_id,
+        selectedChannelId,
+        selectedChannel?.name ?? null,
+      );
+      setConnection(nextConnection);
+      setSuccess('Slackの既定投稿先を保存しました。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Slackの既定投稿先を保存できませんでした。');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <section className="slack-settings-panel">
+      <div className="section-title-row">
+        <span className="section-icon">
+          <PlugZap size={22} />
+        </span>
+        <div>
+          <p className="eyebrow">Slack</p>
+          <h2>Slack連携</h2>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="inline-loading">
+          <Loader2 className="spin" size={18} />
+          <span>Slack連携状態を確認中</span>
+        </div>
+      ) : connection?.connected ? (
+        <div className="slack-settings-body">
+          <p className="subtle-copy">
+            {connection.slack_team_name
+              ? `${connection.slack_team_name} と連携済みです。`
+              : 'Slackワークスペースと連携済みです。'}
+          </p>
+          <label className="field-label" htmlFor="default-slack-channel">
+            既定の投稿先チャンネル
+          </label>
+          <div className="slack-select-row">
+            <span className="select-icon">
+              <Hash size={18} />
+            </span>
+            <select
+              id="default-slack-channel"
+              value={selectedChannelId}
+              onChange={(event) => setSelectedChannelId(event.target.value)}
+              disabled={channels.length === 0}
+            >
+              {channels.map((channel) => (
+                <option key={channel.id} value={channel.id}>
+                  {channel.name}
+                </option>
+              ))}
+            </select>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void handleSaveDefaultChannel()}
+              disabled={!selectedChannelId || isSaving}
+            >
+              {isSaving ? <Loader2 className="spin" size={18} /> : <Save size={18} />}
+              保存
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="slack-empty">
+          <p>Slack連携は未設定です。</p>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => void handleStartSlackOAuth()}
+            disabled={isStartingSlack}
+          >
+            {isStartingSlack ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
+            Slack連携
+          </button>
+        </div>
+      )}
+
+      {error && <p className="error-text">{error}</p>}
+      {success && <p className="success-text">{success}</p>}
+    </section>
+  );
+}
+
 type MeetingListScreenProps = {
   user: User;
   team: UserTeamSummary;
@@ -733,14 +904,17 @@ function MeetingListScreen({
           )}
         </div>
 
-        <TaskSidebar
-          currentUserId={currentUserId}
-          tasks={tasks}
-          isLoading={isLoadingTasks}
-          error={taskError}
-          onOpenTasks={onOpenTasks}
-          onOpenTask={onOpenTask}
-        />
+        <aside className="team-side-panel">
+          <SlackSettingsPanel user={user} team={team} />
+          <TaskSidebar
+            currentUserId={currentUserId}
+            tasks={tasks}
+            isLoading={isLoadingTasks}
+            error={taskError}
+            onOpenTasks={onOpenTasks}
+            onOpenTask={onOpenTask}
+          />
+        </aside>
       </div>
 
       <BuildFooter />
