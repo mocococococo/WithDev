@@ -14,6 +14,10 @@ class AiboardRequestError(RuntimeError):
     pass
 
 
+class AiboardAuthenticationError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class AiboardCreatedMeeting:
     id: UUID
@@ -28,6 +32,7 @@ class AiboardCreatedMeeting:
 async def create_aiboard_meeting(
     *,
     api_base_url: str | None,
+    api_key: str | None,
     title: str,
     theme: str | None,
     host_id: str,
@@ -36,6 +41,10 @@ async def create_aiboard_meeting(
     base_url = (api_base_url or "").strip().rstrip("/")
     if not base_url:
         raise AiboardConfigurationError("aiboard api is not configured")
+
+    normalized_api_key = (api_key or "").strip()
+    if not normalized_api_key:
+        raise AiboardConfigurationError("aiboard api key is not configured")
 
     request_body: dict[str, str] = {
         "title": title,
@@ -47,8 +56,16 @@ async def create_aiboard_meeting(
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(f"{base_url}/api/meetings", json=request_body)
+            response = await client.post(
+                f"{base_url}/api/meetings",
+                json=request_body,
+                headers={"X-Api-Key": normalized_api_key},
+            )
+            if response.status_code in (401, 403):
+                raise AiboardAuthenticationError("aiboard api key was rejected")
             response.raise_for_status()
+    except AiboardAuthenticationError:
+        raise
     except httpx.HTTPError as exc:
         raise AiboardRequestError("failed to create aiboard meeting") from exc
 

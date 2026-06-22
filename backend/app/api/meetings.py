@@ -15,6 +15,7 @@ from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
 from app.models.slack import SlackPostLog
 from app.services.aiboard_service import (
+    AiboardAuthenticationError,
     AiboardConfigurationError,
     AiboardRequestError,
     build_aiboard_launch_url,
@@ -153,6 +154,7 @@ async def create_team_meeting(
     try:
         created = await create_aiboard_meeting(
             api_base_url=settings.aiboard_api_base_url,
+            api_key=settings.aiboard_api_key,
             title=title,
             theme=theme,
             host_id=auth_user.uid,
@@ -166,6 +168,11 @@ async def create_team_meeting(
     except AiboardConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except AiboardAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
     except AiboardRequestError as exc:

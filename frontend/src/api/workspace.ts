@@ -285,10 +285,15 @@ function toWorkspaceError(detail: string, status: number) {
   if (detail === 'failed to generate minutes') {
     return '議事録の生成に失敗しました。時間をおいて再試行してください。';
   }
-  if (detail === 'aiboard api is not configured' || detail === 'aiboard frontend is not configured') {
+  if (
+    detail === 'aiboard api is not configured' ||
+    detail === 'aiboard api key is not configured' ||
+    detail === 'aiboard frontend is not configured'
+  ) {
     return 'Aiboard連携が設定されていません。';
   }
   if (
+    detail === 'aiboard api key was rejected' ||
     detail === 'failed to create aiboard meeting' ||
     detail === 'invalid aiboard response' ||
     detail === 'aiboard response team does not match'

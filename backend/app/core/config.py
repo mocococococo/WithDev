@@ -20,6 +20,7 @@ class Settings:
     aiboard_allowed_service_account: str | None
     aiboard_expected_audience: str | None
     aiboard_api_base_url: str | None
+    aiboard_api_key: str | None
     aiboard_frontend_base_url: str | None
 
     def __init__(self) -> None:
@@ -38,6 +39,7 @@ class Settings:
         self.aiboard_allowed_service_account = os.getenv("AIBOARD_ALLOWED_SERVICE_ACCOUNT")
         self.aiboard_expected_audience = os.getenv("AIBOARD_EXPECTED_AUDIENCE")
         self.aiboard_api_base_url = os.getenv("AIBOARD_API_BASE_URL")
+        self.aiboard_api_key = os.getenv("AIBOARD_API_KEY")
         self.aiboard_frontend_base_url = os.getenv("AIBOARD_FRONTEND_BASE_URL")
 
 
