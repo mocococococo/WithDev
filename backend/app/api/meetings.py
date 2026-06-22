@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,10 +9,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AuthenticatedUser, verify_firebase_user
+from app.core.config import get_settings
 from app.db.session import get_db_session
 from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
 from app.models.slack import SlackPostLog
+from app.services.aiboard_service import (
+    AiboardConfigurationError,
+    AiboardRequestError,
+    build_aiboard_launch_url,
+    create_aiboard_meeting,
+)
 from app.services.minutes_service import (
     MAX_TEXT_LENGTH,
     MinutesGenerationError,
@@ -26,6 +34,7 @@ from app.services.team_access_service import require_team_member
 
 
 router = APIRouter()
+settings = get_settings()
 DEFAULT_MINUTES_TITLE = "\u8b70\u4e8b\u9332"
 
 
@@ -33,7 +42,7 @@ class MeetingBody(BaseModel):
     id: UUID
     team_id: UUID
     title: str
-    theme: str | None
+    themes: list[dict[str, Any]] | None
     status: str
     started_at: datetime
     ended_at: datetime | None
@@ -48,6 +57,11 @@ class MeetingListResponse(BaseModel):
 
 class MeetingResponse(BaseModel):
     meeting: MeetingBody
+
+
+class MeetingCreateResponse(BaseModel):
+    meeting: MeetingBody
+    launch_url: str
 
 
 class MeetingCreateRequest(BaseModel):
@@ -112,7 +126,7 @@ async def list_team_meetings(
 
 @router.post(
     "/teams/{team_id}/meetings",
-    response_model=MeetingResponse,
+    response_model=MeetingCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_team_meeting(
@@ -120,7 +134,7 @@ async def create_team_meeting(
     request: MeetingCreateRequest,
     auth_user: AuthenticatedUser = Depends(verify_firebase_user),
     session: AsyncSession = Depends(get_db_session),
-) -> MeetingResponse:
+) -> MeetingCreateResponse:
     await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
 
     title = (request.title or "").strip()
@@ -136,21 +150,49 @@ async def create_team_meeting(
             detail="title must be 255 characters or less",
         )
 
-    now = datetime.now(timezone.utc)
+    try:
+        created = await create_aiboard_meeting(
+            api_base_url=settings.aiboard_api_base_url,
+            title=title,
+            theme=theme,
+            host_id=auth_user.uid,
+            team_id=team_id,
+        )
+        launch_url = build_aiboard_launch_url(
+            frontend_base_url=settings.aiboard_frontend_base_url,
+            team_id=team_id,
+            meeting_id=created.id,
+        )
+    except AiboardConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except AiboardRequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
     meeting = Meeting(
+        id=created.id,
         team_id=team_id,
-        title=title,
-        theme=theme,
+        title=created.title,
+        themes=created.themes,
         status="active",
-        started_at=now,
+        started_at=_datetime_from_milliseconds(created.created_at_ms),
         ended_at=None,
+        aiboard_payload=created.payload,
         is_deleted=False,
     )
     session.add(meeting)
     await session.commit()
     await session.refresh(meeting)
 
-    return MeetingResponse(meeting=_meeting_body(meeting))
+    return MeetingCreateResponse(
+        meeting=_meeting_body(meeting),
+        launch_url=launch_url,
+    )
 
 
 @router.get("/meetings/{meeting_id}", response_model=MeetingResponse)
@@ -357,7 +399,7 @@ def _meeting_body(meeting: Meeting) -> MeetingBody:
         id=meeting.id,
         team_id=meeting.team_id,
         title=meeting.title,
-        theme=meeting.theme,
+        themes=meeting.themes,
         status=meeting.status,
         started_at=meeting.started_at,
         ended_at=meeting.ended_at,
@@ -365,6 +407,15 @@ def _meeting_body(meeting: Meeting) -> MeetingBody:
         updated_at=meeting.updated_at,
         participant_count=1,
     )
+
+
+def _datetime_from_milliseconds(value: int | float | None) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    try:
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return datetime.now(timezone.utc)
 
 
 def _minutes_body(minutes: MeetingMinutes) -> MinutesBody:

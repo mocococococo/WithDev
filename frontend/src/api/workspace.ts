@@ -24,10 +24,17 @@ export type WorkspaceContext = {
   teams: UserTeamSummary[];
 };
 
+export type MeetingTheme = {
+  id?: string;
+  title?: string;
+  created_at?: number;
+};
+
 export type MeetingSummary = {
   id: string;
   team_id: string;
   title: string;
+  themes: MeetingTheme[] | null;
   initial_theme: string;
   status: MeetingStatus;
   participant_count: number;
@@ -62,7 +69,7 @@ type ApiMeeting = {
   id: string;
   team_id: string;
   title: string;
-  theme?: string | null;
+  themes?: MeetingTheme[] | null;
   status: MeetingStatus;
   started_at: string;
   ended_at?: string | null;
@@ -77,6 +84,15 @@ type ApiMeetingListResponse = {
 
 type ApiMeetingResponse = {
   meeting?: ApiMeeting;
+};
+
+type ApiMeetingCreateResponse = ApiMeetingResponse & {
+  launch_url?: string;
+};
+
+export type MeetingLaunch = {
+  meeting: MeetingSummary;
+  launch_url: string;
 };
 
 type ApiMinutes = {
@@ -135,7 +151,7 @@ export async function createTeamMeeting(
   teamId: string,
   title: string,
   initialTheme: string,
-): Promise<MeetingSummary> {
+): Promise<MeetingLaunch> {
   const response = await fetchWithAuth(user, `/api/teams/${teamId}/meetings`, {
     method: 'POST',
     body: JSON.stringify({ title, theme: initialTheme }),
@@ -145,12 +161,15 @@ export async function createTeamMeeting(
     throw new Error(toWorkspaceError(detail, response.status));
   }
 
-  const payload = (await response.json()) as ApiMeetingResponse;
-  if (!payload.meeting) {
+  const payload = (await response.json()) as ApiMeetingCreateResponse;
+  if (!payload.meeting || !payload.launch_url) {
     throw new Error('ミーティング作成APIのレスポンスを読み取れませんでした。');
   }
 
-  return toMeetingSummary(payload.meeting);
+  return {
+    meeting: toMeetingSummary(payload.meeting),
+    launch_url: payload.launch_url,
+  };
 }
 
 export async function fetchMeetingDetail(user: User, meetingId: string): Promise<MeetingSummary> {
@@ -216,7 +235,8 @@ function toMeetingSummary(meeting: ApiMeeting): MeetingSummary {
     id: meeting.id,
     team_id: meeting.team_id,
     title: meeting.title,
-    initial_theme: meeting.theme ?? '',
+    themes: meeting.themes ?? null,
+    initial_theme: meeting.themes?.[0]?.title ?? '',
     status: meeting.status,
     participant_count: meeting.participant_count ?? 1,
     created_at: toTimestamp(meeting.created_at),
@@ -264,6 +284,16 @@ function toWorkspaceError(detail: string, status: number) {
   }
   if (detail === 'failed to generate minutes') {
     return '議事録の生成に失敗しました。時間をおいて再試行してください。';
+  }
+  if (detail === 'aiboard api is not configured' || detail === 'aiboard frontend is not configured') {
+    return 'Aiboard連携が設定されていません。';
+  }
+  if (
+    detail === 'failed to create aiboard meeting' ||
+    detail === 'invalid aiboard response' ||
+    detail === 'aiboard response team does not match'
+  ) {
+    return 'Aiboardでミーティングを作成できませんでした。';
   }
   return '処理に失敗しました。時間をおいて再試行してください。';
 }

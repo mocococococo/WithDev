@@ -56,7 +56,7 @@ class AiboardMeetingBody(BaseModel):
     id: UUID
     team_id: UUID
     title: str
-    theme: str | None
+    themes: list[dict[str, Any]] | None
     status: str
     started_at: datetime
     ended_at: datetime | None
@@ -428,7 +428,7 @@ async def _upsert_aiboard_meeting(
     title = _normalize_text(payload.get("title")) or "Aiboard meeting"
     started_at = _parse_datetime(payload.get("created_at")) or datetime.now(timezone.utc)
     ended_at = _parse_datetime(payload.get("ended_at")) or datetime.now(timezone.utc)
-    theme = _current_theme_title(payload)
+    themes = _normalize_themes(payload.get("themes"))
 
     result = await session.execute(select(Meeting).where(Meeting.id == meeting_id))
     meeting = result.scalar_one_or_none()
@@ -443,7 +443,7 @@ async def _upsert_aiboard_meeting(
             id=meeting_id,
             team_id=team_id,
             title=title,
-            theme=theme,
+            themes=themes,
             status="ended",
             started_at=started_at,
             ended_at=ended_at,
@@ -453,7 +453,7 @@ async def _upsert_aiboard_meeting(
         session.add(meeting)
     else:
         meeting.title = title
-        meeting.theme = theme
+        meeting.themes = themes
         meeting.status = "ended"
         meeting.started_at = started_at
         meeting.ended_at = ended_at
@@ -639,22 +639,11 @@ def _theme_content_lines(theme: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _current_theme_title(payload: dict[str, Any]) -> str | None:
-    themes = payload.get("themes")
-    if not isinstance(themes, list):
+def _normalize_themes(value: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
         return None
-
-    current_theme_id = payload.get("current_theme_id")
-    first_title: str | None = None
-    for theme in themes:
-        if not isinstance(theme, dict):
-            continue
-        title = _normalize_text(theme.get("title"))
-        if first_title is None:
-            first_title = title
-        if current_theme_id and theme.get("id") == current_theme_id:
-            return title
-    return first_title
+    themes = [theme for theme in value if isinstance(theme, dict)]
+    return themes or None
 
 
 def _parse_uuid(value: Any, error_detail: str) -> UUID:
@@ -671,6 +660,11 @@ def _parse_uuid(value: Any, error_detail: str) -> UUID:
 def _parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
     if not isinstance(value, str) or not value.strip():
         return None
     try:
@@ -689,7 +683,7 @@ def _meeting_body(meeting: Meeting) -> AiboardMeetingBody:
         id=meeting.id,
         team_id=meeting.team_id,
         title=meeting.title,
-        theme=meeting.theme,
+        themes=meeting.themes,
         status=meeting.status,
         started_at=meeting.started_at,
         ended_at=meeting.ended_at,

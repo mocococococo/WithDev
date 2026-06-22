@@ -404,7 +404,7 @@ function MeetingCreateForm({ onCreate, onCancel }: MeetingCreateFormProps) {
   const [title, setTitle] = useState('');
   const [initialTheme, setInitialTheme] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const canSubmit = title.trim().length > 0 && initialTheme.trim().length > 0 && !isSubmitting;
+  const canSubmit = title.trim().length > 0 && !isSubmitting;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -430,7 +430,7 @@ function MeetingCreateForm({ onCreate, onCancel }: MeetingCreateFormProps) {
         </span>
         <div>
           <h2>新しいミーティング</h2>
-          <p>最初のテーマを決めて開始します。</p>
+          <p>テーマは開始後にも追加できます。</p>
         </div>
       </div>
 
@@ -447,7 +447,7 @@ function MeetingCreateForm({ onCreate, onCancel }: MeetingCreateFormProps) {
       />
 
       <label className="field-label" htmlFor="meeting-theme">
-        最初のテーマ
+        最初のテーマ（任意）
       </label>
       <input
         id="meeting-theme"
@@ -2078,17 +2078,17 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
 
     setMeetingError(null);
     try {
-      const nextMeeting = await createTeamMeeting(
+      const launch = await createTeamMeeting(
         currentUser,
         selectedTeam.team_id,
         title,
         initialTheme,
       );
       setMeetings((currentMeetings) => [
-        nextMeeting,
-        ...currentMeetings.filter((meeting) => meeting.id !== nextMeeting.id),
+        launch.meeting,
+        ...currentMeetings.filter((meeting) => meeting.id !== launch.meeting.id),
       ]);
-      setSelectedMeetingId(nextMeeting.id);
+      window.location.assign(launch.launch_url);
     } catch (err) {
       setMeetingError(err instanceof Error ? err.message : 'ミーティング作成に失敗しました。');
       throw err;
