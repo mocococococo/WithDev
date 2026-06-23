@@ -1,17 +1,17 @@
 # WithDev Backend
 
-FastAPI backend for WithDev.
+WithDev の FastAPI バックエンドです。
 
 ## MVP
 
-The initial backend provides a minutes generation API.
+初期バックエンドでは、議事録生成APIを提供します。
 
 - `POST /api/minutes/from-text`
-- Firebase ID Token authentication is required.
-- The request body uses `text`.
-- The response returns Markdown minutes in `minutes.body`.
+- Firebase ID Tokenによる認証が必要です。
+- リクエストボディには`text`を指定します。
+- レスポンスの`minutes.body`にMarkdown形式の議事録を返します。
 
-## Setup
+## セットアップ
 
 ```bash
 cd backend
@@ -21,7 +21,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Set these environment variables:
+以下の環境変数を設定します。
 
 ```bash
 GEMINI_API_KEY=...
@@ -29,15 +29,15 @@ GEMINI_MODEL=...
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 ```
 
-Firebase Admin SDK uses Application Default Credentials locally. Set `GOOGLE_APPLICATION_CREDENTIALS` when needed.
+Firebase Admin SDKは、ローカル環境ではApplication Default Credentialsを使用します。必要に応じて`GOOGLE_APPLICATION_CREDENTIALS`を設定してください。
 
-## Run
+## 起動
 
 ```bash
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Health check:
+ヘルスチェック:
 
 ```bash
 curl http://127.0.0.1:8000/health
