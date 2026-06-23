@@ -9,7 +9,7 @@ from app.models.slack import (
     SlackPostLog,
 )
 from app.models.task import Task
-from app.models.team import Team, TeamMember
+from app.models.team import Team, TeamInvite, TeamMember
 from app.models.user import User
 
 

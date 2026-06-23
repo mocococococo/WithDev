@@ -15,4 +15,5 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     team_memberships = relationship("TeamMember", back_populates="user")
+    created_team_invites = relationship("TeamInvite", back_populates="created_by_user")
     assigned_tasks = relationship("Task", back_populates="assignee_user")

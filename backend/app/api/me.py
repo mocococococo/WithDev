@@ -24,6 +24,7 @@ class MeTeam(BaseModel):
     id: UUID
     name: str
     role: str
+    member_count: int
 
 
 class MeResponse(BaseModel):
@@ -47,7 +48,7 @@ async def get_me(
             photo_url=context.user.photo_url,
         ),
         teams=[
-            MeTeam(id=team.id, name=team.name, role=team.role)
+            MeTeam(id=team.id, name=team.name, role=team.role, member_count=team.member_count)
             for team in context.teams
         ],
     )

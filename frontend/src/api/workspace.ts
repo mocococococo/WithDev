@@ -58,6 +58,7 @@ type ApiTeam = {
   id: string;
   name: string;
   role: TeamRole;
+  member_count: number;
 };
 
 type ApiMeResponse = {
@@ -126,7 +127,7 @@ export async function fetchMe(user: User): Promise<WorkspaceContext> {
       team_id: team.id,
       name: team.name,
       role: team.role,
-      member_count: 1,
+      member_count: team.member_count,
     })),
   };
 }

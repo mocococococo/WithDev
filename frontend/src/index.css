@@ -1211,6 +1211,110 @@ h2 {
   }
 }
 
+.invite-panel,
+.invite-confirmation {
+  display: grid;
+  gap: 14px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 18px;
+}
+
+.invite-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.invite-created {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.invite-created p,
+.invite-item span,
+.invite-confirmation > p {
+  color: #667085;
+  font-size: 0.9rem;
+}
+
+.invite-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.invite-url-row input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #ffffff;
+  color: #344054;
+}
+
+.invite-list {
+  display: grid;
+  gap: 10px;
+}
+
+.invite-item {
+  display: grid;
+  gap: 4px;
+  padding-top: 12px;
+  border-top: 1px solid #e4e7ec;
+}
+
+.invite-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.invite-status {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid #d0d5dd;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.invite-status.active {
+  border-color: #a7f3d0;
+  background: #ecfdf3;
+  color: #047857;
+}
+
+.invite-status.expired,
+.invite-status.revoked {
+  background: #f2f4f7;
+  color: #667085;
+}
+
+.icon-button.small {
+  width: 34px;
+  height: 34px;
+}
+
+.invite-page {
+  max-width: 920px;
+}
+
+.invite-confirmation {
+  width: min(100%, 620px);
+  margin: 40px auto 0;
+  padding: 28px;
+  box-shadow: 0 16px 40px rgb(15 23 42 / 8%);
+}
 @media (max-width: 840px) {
   .auth-layout,
   .app-layout {

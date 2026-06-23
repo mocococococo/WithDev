@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthenticatedUser
@@ -14,6 +14,7 @@ class InitializedTeam:
     id: UUID
     name: str
     role: str
+    member_count: int
 
 
 @dataclass(frozen=True)
@@ -117,9 +118,19 @@ async def _get_active_teams(
     session: AsyncSession,
     user_id: UUID,
 ) -> list[InitializedTeam]:
+    member_counts = (
+        select(
+            TeamMember.team_id.label("team_id"),
+            func.count(TeamMember.id).label("member_count"),
+        )
+        .where(TeamMember.left_at.is_(None))
+        .group_by(TeamMember.team_id)
+        .subquery()
+    )
     result = await session.execute(
-        select(TeamMember, Team)
+        select(TeamMember, Team, member_counts.c.member_count)
         .join(Team, Team.id == TeamMember.team_id)
+        .join(member_counts, member_counts.c.team_id == Team.id)
         .where(
             TeamMember.user_id == user_id,
             TeamMember.left_at.is_(None),
@@ -129,8 +140,13 @@ async def _get_active_teams(
     )
 
     return [
-        InitializedTeam(id=team.id, name=team.name, role=membership.role)
-        for membership, team in result.all()
+        InitializedTeam(
+            id=team.id,
+            name=team.name,
+            role=membership.role,
+            member_count=int(member_count),
+        )
+        for membership, team, member_count in result.all()
     ]
 
 

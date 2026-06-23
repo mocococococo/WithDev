@@ -20,6 +20,7 @@ class Team(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     tasks = relationship("Task", back_populates="team")
     slack_connections = relationship("SlackConnection", back_populates="team")
     slack_oauth_states = relationship("SlackOAuthState", back_populates="team")
+    invites = relationship("TeamInvite", back_populates="team")
 
 
 class TeamMember(UUIDPrimaryKeyMixin, Base):
@@ -55,3 +56,30 @@ class TeamMember(UUIDPrimaryKeyMixin, Base):
 
     user = relationship("User", back_populates="team_memberships")
     team = relationship("Team", back_populates="members")
+
+
+class TeamInvite(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "team_invites"
+
+    team_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("teams.id"),
+        nullable=False,
+        index=True,
+    )
+    created_by_user_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("now()"),
+        nullable=False,
+    )
+
+    team = relationship("Team", back_populates="invites")
+    created_by_user = relationship("User", back_populates="created_team_invites")

@@ -61,6 +61,13 @@ import {
   type SlackChannel,
   type SlackConnectionStatus,
 } from './api/slack';
+import {
+  acceptTeamInvite,
+  createTeam,
+  fetchInvitePreview,
+  type InvitePreview,
+} from './api/teams';
+import { TeamInvitePanel } from './components/TeamInvitePanel';
 import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthContext';
 
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
@@ -370,10 +377,32 @@ type TeamSelectionScreenProps = {
   user: User;
   teams: UserTeamSummary[];
   onSelectTeam: (teamId: string) => void;
+  onCreateTeam: (name: string) => Promise<void>;
   onLogout: () => void;
 };
 
-function TeamSelectionScreen({ user, teams, onSelectTeam, onLogout }: TeamSelectionScreenProps) {
+function TeamSelectionScreen({ user, teams, onSelectTeam, onCreateTeam, onLogout }: TeamSelectionScreenProps) {
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [name, setName] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!name.trim() || isSubmitting) return;
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await onCreateTeam(name.trim());
+      setName('');
+      setShowCreateForm(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'チームを作成できませんでした。');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <main className="app-layout">
       <header className="app-header">
@@ -384,12 +413,41 @@ function TeamSelectionScreen({ user, teams, onSelectTeam, onLogout }: TeamSelect
         <AccountMenu user={user} onLogout={onLogout} />
       </header>
 
+      <section className="toolbar">
+        <div>
+          <h2>所属チーム</h2>
+          <p>{teams.length} 件のチームがあります。</p>
+        </div>
+        <button className="primary-button" type="button" onClick={() => setShowCreateForm((value) => !value)}>
+          <Plus size={18} />
+          新しいチーム
+        </button>
+      </section>
+
+      {showCreateForm && (
+        <form className="create-form" onSubmit={handleSubmit}>
+          <div className="form-header">
+            <span className="form-icon"><Users size={20} /></span>
+            <div><p className="eyebrow">Create team</p><h2>チームを作成</h2></div>
+          </div>
+          <label className="field-label" htmlFor="team-name">チーム名</label>
+          <input id="team-name" value={name} maxLength={255} onChange={(event) => setName(event.target.value)} autoFocus />
+          {error && <p className="error-text">{error}</p>}
+          <div className="form-actions">
+            <button className="secondary-button" type="button" onClick={() => setShowCreateForm(false)}>キャンセル</button>
+            <button className="primary-button" type="submit" disabled={!name.trim() || isSubmitting}>
+              {isSubmitting ? <Loader2 className="spin" size={18} /> : <Plus size={18} />}
+              作成
+            </button>
+          </div>
+        </form>
+      )}
+
       <section className="team-list" aria-label="所属チーム">
         {teams.map((team) => (
           <TeamCard key={team.team_id} team={team} onOpen={() => onSelectTeam(team.team_id)} />
         ))}
       </section>
-
       <BuildFooter />
     </main>
   );
@@ -951,7 +1009,8 @@ function MeetingListScreen({
         </div>
 
         <aside className="team-side-panel">
-          <SlackSettingsPanel user={user} team={team} />
+                    <TeamInvitePanel user={user} teamId={team.team_id} />
+<SlackSettingsPanel user={user} team={team} />
           <TaskSidebar
             currentUserId={currentUserId}
             tasks={tasks}
@@ -1926,6 +1985,61 @@ function BuildFooter() {
   );
 }
 
+function readInviteToken() {
+  const match = window.location.pathname.match(/^\/invite\/([^/]+)\/?$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function clearInvitePath() {
+  window.history.replaceState({}, '', '/');
+}
+
+type InviteAcceptanceScreenProps = {
+  user: User;
+  preview: InvitePreview | null;
+  isLoading: boolean;
+  error: string | null;
+  isAccepting: boolean;
+  onAccept: () => void;
+  onCancel: () => void;
+  onLogout: () => void;
+};
+
+function InviteAcceptanceScreen({ user, preview, isLoading, error, isAccepting, onAccept, onCancel, onLogout }: InviteAcceptanceScreenProps) {
+  return (
+    <main className="app-layout invite-page">
+      <header className="app-header">
+        <div><p className="eyebrow">WithDev</p><h1>チーム招待</h1></div>
+        <AccountMenu user={user} onLogout={onLogout} />
+      </header>
+      <section className="invite-confirmation">
+        {isLoading ? (
+          <><Loader2 className="spin" size={36} /><h2>招待を確認しています</h2></>
+        ) : error ? (
+          <><h2>招待リンクを利用できません</h2><p className="error-text">{error}</p></>
+        ) : preview ? (
+          <>
+            <span className="section-icon"><Users size={22} /></span>
+            <p className="eyebrow">Join team</p>
+            <h2>{preview.team_name} に参加</h2>
+            <p>参加すると、このチームのミーティング・議事録・タスクを利用できます。</p>
+            <p className="subtle-copy">有効期限 {new Intl.DateTimeFormat('ja-JP', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(preview.expires_at))}</p>
+          </>
+        ) : null}
+        <div className="form-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>チーム一覧へ</button>
+          {preview && !error && (
+            <button className="primary-button" type="button" onClick={onAccept} disabled={isAccepting}>
+              {isAccepting ? <Loader2 className="spin" size={18} /> : <UserCheck size={18} />}
+              参加する
+            </button>
+          )}
+        </div>
+      </section>
+      <BuildFooter />
+    </main>
+  );
+}
 type WorkspaceAppProps = {
   currentUser: User;
 };
@@ -1948,6 +2062,11 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [tasks, setTasks] = useState<TeamTask[]>([]);
   const [teamMembers, setTeamMembers] = useState<TeamMemberSummary[]>([]);
+  const [inviteToken, setInviteToken] = useState<string | null>(() => readInviteToken());
+  const [invitePreview, setInvitePreview] = useState<InvitePreview | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [isLoadingInvite, setIsLoadingInvite] = useState(() => Boolean(readInviteToken()));
+  const [isAcceptingInvite, setIsAcceptingInvite] = useState(false);
 
   useEffect(() => {
     let isCancelled = false;
@@ -2063,6 +2182,31 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     };
   }, [currentUser, selectedTeamId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (isInitializing || !inviteToken) return () => { cancelled = true; };
+    setIsLoadingInvite(true);
+    setInviteError(null);
+    void fetchInvitePreview(currentUser, inviteToken)
+      .then((preview) => {
+        if (cancelled) return;
+        if (preview.already_member) {
+          setSelectedTeamId(preview.team_id);
+          setSelectedTeamView('meetings');
+          setInviteToken(null);
+          clearInvitePath();
+        } else {
+          setInvitePreview(preview);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setInviteError(err instanceof Error ? err.message : '招待リンクを確認できませんでした。');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingInvite(false);
+      });
+    return () => { cancelled = true; };
+  }, [currentUser, inviteToken, isInitializing]);
   const selectedTeam = teams.find((team) => team.team_id === selectedTeamId) ?? null;
   const selectedMeeting = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null;
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
@@ -2073,6 +2217,39 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     ? tasks.filter((task) => task.team_id === selectedTeam.team_id)
     : [];
 
+  const handleCreateTeam = async (name: string) => {
+    setWorkspaceError(null);
+    const team = await createTeam(currentUser, name);
+    setTeams((current) => [...current.filter((item) => item.team_id !== team.team_id), team]);
+    setSelectedTeamId(team.team_id);
+    setSelectedTeamView('meetings');
+  };
+
+  const handleAcceptInvite = async () => {
+    if (!inviteToken) return;
+    setIsAcceptingInvite(true);
+    setInviteError(null);
+    try {
+      const team = await acceptTeamInvite(currentUser, inviteToken);
+      setTeams((current) => [...current.filter((item) => item.team_id !== team.team_id), team]);
+      setSelectedTeamId(team.team_id);
+      setSelectedTeamView('meetings');
+      setInvitePreview(null);
+      setInviteToken(null);
+      clearInvitePath();
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : 'チームに参加できませんでした。');
+    } finally {
+      setIsAcceptingInvite(false);
+    }
+  };
+
+  const handleCancelInvite = () => {
+    setInvitePreview(null);
+    setInviteError(null);
+    setInviteToken(null);
+    clearInvitePath();
+  };
   const handleCreateMeeting = async (title: string, initialTheme: string) => {
     if (!selectedTeam) return;
 
@@ -2169,6 +2346,20 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     return <LoadingScreen />;
   }
 
+  if (inviteToken) {
+    return (
+      <InviteAcceptanceScreen
+        user={currentUser}
+        preview={invitePreview}
+        isLoading={isLoadingInvite}
+        error={inviteError}
+        isAccepting={isAcceptingInvite}
+        onAccept={() => void handleAcceptInvite()}
+        onCancel={handleCancelInvite}
+        onLogout={handleLogout}
+      />
+    );
+  }
   if (workspaceError && teams.length === 0) {
     return (
       <main className="app-layout">
@@ -2275,6 +2466,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         setSelectedTeamId(teamId);
         setSelectedTeamView('meetings');
       }}
+      onCreateTeam={handleCreateTeam}
       onLogout={handleLogout}
     />
   );
