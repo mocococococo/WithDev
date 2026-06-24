@@ -21,7 +21,7 @@ class AiboardAuthenticationError(RuntimeError):
 @dataclass(frozen=True)
 class AiboardCreatedMeeting:
     id: UUID
-    host_id: str
+    host_id: str | None
     team_id: str
     title: str
     themes: list[dict[str, Any]] | None
@@ -35,7 +35,7 @@ async def create_aiboard_meeting(
     api_key: str | None,
     title: str,
     theme: str | None,
-    host_id: str,
+    host_email: str,
     team_id: UUID,
 ) -> AiboardCreatedMeeting:
     base_url = (api_base_url or "").strip().rstrip("/")
@@ -48,7 +48,7 @@ async def create_aiboard_meeting(
 
     request_body: dict[str, str] = {
         "title": title,
-        "host_id": host_id,
+        "host_email": host_email,
         "team_id": str(team_id),
     }
     if theme:
@@ -79,9 +79,9 @@ async def create_aiboard_meeting(
 
     meeting_id = _parse_uuid(payload.get("id"))
     response_title = _text(payload.get("title"))
-    response_host_id = _text(payload.get("host_id"))
+    response_host_id = _text(payload.get("host_id")) or None
     response_team_id = _text(payload.get("team_id"))
-    if meeting_id is None or not response_title or not response_host_id or not response_team_id:
+    if meeting_id is None or not response_title or not response_team_id:
         raise AiboardRequestError("invalid aiboard response")
     if response_team_id != str(team_id):
         raise AiboardRequestError("aiboard response team does not match")

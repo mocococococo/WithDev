@@ -151,13 +151,20 @@ async def create_team_meeting(
             detail="title must be 255 characters or less",
         )
 
+    host_email = (auth_user.email or auth_user.claims.get("email") or "").strip()
+    if not host_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="host email is required",
+        )
+
     try:
         created = await create_aiboard_meeting(
             api_base_url=settings.aiboard_api_base_url,
             api_key=settings.aiboard_api_key,
             title=title,
             theme=theme,
-            host_id=auth_user.uid,
+            host_email=host_email,
             team_id=team_id,
         )
         launch_url = build_aiboard_launch_url(
