@@ -50,6 +50,7 @@ class MeetingBody(BaseModel):
     created_at: datetime
     updated_at: datetime
     participant_count: int = 1
+    launch_url: str | None = None
 
 
 class MeetingListResponse(BaseModel):
@@ -420,7 +421,19 @@ def _meeting_body(meeting: Meeting) -> MeetingBody:
         created_at=meeting.created_at,
         updated_at=meeting.updated_at,
         participant_count=1,
+        launch_url=_meeting_launch_url(meeting),
     )
+
+
+def _meeting_launch_url(meeting: Meeting) -> str | None:
+    try:
+        return build_aiboard_launch_url(
+            frontend_base_url=settings.aiboard_frontend_base_url,
+            team_id=meeting.team_id,
+            meeting_id=meeting.id,
+        )
+    except AiboardConfigurationError:
+        return None
 
 
 def _datetime_from_milliseconds(value: int | float | None) -> datetime:

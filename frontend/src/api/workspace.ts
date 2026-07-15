@@ -43,6 +43,7 @@ export type MeetingSummary = {
   ended_at: number | null;
   minutes_id: string | null;
   minutes: string | null;
+  launch_url: string | null;
 };
 
 export type MeetingMinutesSummary = {
@@ -77,6 +78,7 @@ type ApiMeeting = {
   created_at: string;
   updated_at: string;
   participant_count?: number;
+  launch_url?: string | null;
 };
 
 type ApiMeetingListResponse = {
@@ -167,8 +169,13 @@ export async function createTeamMeeting(
     throw new Error('ミーティング作成APIのレスポンスを読み取れませんでした。');
   }
 
+  const meeting = toMeetingSummary(payload.meeting);
+
   return {
-    meeting: toMeetingSummary(payload.meeting),
+    meeting: {
+      ...meeting,
+      launch_url: meeting.launch_url ?? payload.launch_url,
+    },
     launch_url: payload.launch_url,
   };
 }
@@ -245,6 +252,7 @@ function toMeetingSummary(meeting: ApiMeeting): MeetingSummary {
     ended_at: meeting.ended_at ? toTimestamp(meeting.ended_at) : null,
     minutes_id: null,
     minutes: null,
+    launch_url: meeting.launch_url ?? null,
   };
 }
 

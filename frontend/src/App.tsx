@@ -1885,6 +1885,13 @@ function MeetingRoomScreen({
 }: MeetingRoomScreenProps) {
   const isActive = meeting.status === 'active';
   const [hasJoined, setHasJoined] = useState(false);
+  const canJoinMeeting = Boolean(meeting.launch_url);
+
+  const handleJoinMeeting = () => {
+    if (!meeting.launch_url) return;
+    setHasJoined(true);
+    window.location.assign(meeting.launch_url);
+  };
 
   return (
     <main className="app-layout">
@@ -1943,8 +1950,8 @@ function MeetingRoomScreen({
             <button
               className="primary-button"
               type="button"
-              onClick={() => setHasJoined(true)}
-              disabled={hasJoined}
+              onClick={handleJoinMeeting}
+              disabled={hasJoined || !canJoinMeeting}
             >
               <PlayCircle size={18} />
               {hasJoined ? '参加中' : 'ミーティングに参加'}
