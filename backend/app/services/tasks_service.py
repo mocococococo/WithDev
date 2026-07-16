@@ -13,6 +13,7 @@ class TaskGenerationError(Exception):
 
 def generate_task_actions_from_minutes(
     *,
+    conversation_logs: str,
     minutes_body: str,
     existing_tasks: list[dict[str, Any]],
     team_members: list[dict[str, Any]],
@@ -23,7 +24,8 @@ def generate_task_actions_from_minutes(
 
     prompt = (
         _load_prompt()
-        .replace("{minutes}", minutes_body)
+        .replace("{conversation_logs}", conversation_logs or "（会話ログなし）")
+        .replace("{minutes}", minutes_body or "（議事録なし）")
         .replace("{existing_tasks}", json.dumps(existing_tasks, ensure_ascii=False, default=str))
         .replace("{team_members}", json.dumps(team_members, ensure_ascii=False, default=str))
     )

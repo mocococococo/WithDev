@@ -678,7 +678,7 @@ h2 {
   color: #c2410c;
 }
 
-.task-status-badge.doing {
+.task-status-badge.in_progress {
   border-color: #bfdbfe;
   background: #eff6ff;
   color: #1d4ed8;
@@ -950,7 +950,7 @@ h2 {
   box-shadow: inset 4px 0 0 #fb923c;
 }
 
-.roadmap-step.doing {
+.roadmap-step.in_progress {
   box-shadow: inset 4px 0 0 #3b82f6;
 }
 

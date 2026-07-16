@@ -22,7 +22,7 @@ from app.services.team_access_service import require_team_member
 
 
 router = APIRouter()
-VALID_TASK_STATUSES = {"todo", "doing", "done"}
+VALID_TASK_STATUSES = {"todo", "in_progress", "done"}
 
 
 class TaskBody(BaseModel):
@@ -124,7 +124,7 @@ async def generate_team_tasks(
 ) -> TaskGenerateResponse:
     await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
 
-    minutes = await _get_accessible_minutes(
+    minutes, meeting = await _get_accessible_minutes(
         session=session,
         team_id=team_id,
         minutes_id=request.minutes_id,
@@ -136,6 +136,7 @@ async def generate_team_tasks(
     try:
         actions = await run_in_threadpool(
             generate_task_actions_from_minutes,
+            conversation_logs=_conversation_logs_from_meeting(meeting),
             minutes_body=minutes.body,
             existing_tasks=[_task_prompt_body(task) for task in existing_tasks],
             team_members=[_member_prompt_body(user, role) for user, role in members],
@@ -260,9 +261,9 @@ async def _get_accessible_minutes(
     session: AsyncSession,
     team_id: UUID,
     minutes_id: UUID,
-) -> MeetingMinutes:
+) -> tuple[MeetingMinutes, Meeting]:
     result = await session.execute(
-        select(MeetingMinutes)
+        select(MeetingMinutes, Meeting)
         .join(Meeting, MeetingMinutes.meeting_id == Meeting.id)
         .where(
             MeetingMinutes.id == minutes_id,
@@ -271,11 +272,62 @@ async def _get_accessible_minutes(
             Meeting.is_deleted.is_(False),
         )
     )
-    minutes = result.scalar_one_or_none()
-    if minutes is None:
+    row = result.one_or_none()
+    if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="minutes not found")
-    return minutes
+    return row[0], row[1]
 
+
+
+def _conversation_logs_from_meeting(meeting: Meeting) -> str:
+    payload = meeting.aiboard_payload if isinstance(meeting.aiboard_payload, dict) else {}
+    sections: list[str] = []
+
+    themes = payload.get("themes") if isinstance(payload, dict) else None
+    if isinstance(themes, list):
+        for theme in themes:
+            if not isinstance(theme, dict):
+                continue
+            title = _clean_optional_string(theme.get("title"), 255)
+            lines = _logs_to_lines(theme.get("logs"))
+            if not lines:
+                continue
+            if title:
+                sections.append(f"## {title}")
+            sections.extend(lines)
+
+    current_logs = payload.get("current_logs") if isinstance(payload, dict) else None
+    current_lines = _logs_to_lines(current_logs)
+    if current_lines:
+        sections.append("## current_logs")
+        sections.extend(current_lines)
+
+    return "\n".join(sections).strip()
+
+
+def _logs_to_lines(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    lines: list[str] = []
+    for log in value:
+        content = _log_content(log)
+        if content:
+            lines.append(content)
+    return lines
+
+
+def _log_content(log: object) -> str | None:
+    if isinstance(log, str):
+        return _clean_optional_string(log, 5000)
+    if not isinstance(log, dict):
+        return None
+
+    for key in ("content", "text", "message", "body"):
+        content = _clean_optional_string(log.get(key), 5000)
+        if content:
+            return content
+    return None
 
 async def _get_team_tasks(*, session: AsyncSession, team_id: UUID) -> list[Task]:
     result = await session.execute(
@@ -457,18 +509,23 @@ def _normalize_body(value: object, fallback: str) -> str:
 
 
 def _normalize_status(value: object) -> str:
-    status_value = str(value or "").strip().lower()
+    status_value = _normalize_status_value(value)
     return status_value if status_value in VALID_TASK_STATUSES else "todo"
 
 
 def _validate_status(value: object) -> str:
-    status_value = str(value or "").strip().lower()
+    status_value = _normalize_status_value(value)
     if status_value not in VALID_TASK_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="invalid task status",
         )
     return status_value
+
+
+def _normalize_status_value(value: object) -> str:
+    status_value = str(value or "").strip().lower()
+    return "in_progress" if status_value == "doing" else status_value
 
 
 def _parse_generated_due_at(value: object) -> datetime | None:

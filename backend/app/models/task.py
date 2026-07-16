@@ -12,7 +12,7 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "tasks"
     __table_args__ = (
-        CheckConstraint("status IN ('todo', 'doing', 'done')", name="task_status"),
+        CheckConstraint("status IN ('todo', 'in_progress', 'done')", name="task_status"),
     )
 
     team_id: Mapped[UUID] = mapped_column(

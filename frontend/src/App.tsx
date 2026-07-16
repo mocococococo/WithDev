@@ -113,14 +113,14 @@ const filterLabels: Record<MeetingFilter, string> = {
 
 const taskStatusLabels: Record<TaskStatus, string> = {
   todo: '未着手',
-  doing: '進行中',
+  in_progress: '進行中',
   done: '完了',
 };
 
 const taskFilterLabels: Record<TaskFilter, string> = {
   all: 'すべて',
   todo: '未着手',
-  doing: '進行中',
+  in_progress: '進行中',
   done: '完了',
 };
 
@@ -216,7 +216,7 @@ function createPlaceholderRoadmap(taskTitle: string): TaskRoadmap {
         id: 'step_collect',
         title: '必要な情報を集める',
         description: '関連するミーティング、議事録、チーム内の前提を確認します。',
-        status: 'doing',
+        status: 'in_progress',
       },
       {
         id: 'step_execute',
@@ -567,7 +567,7 @@ function MeetingCard({ meeting, onOpen }: MeetingCardProps) {
 
 function sortTasks(tasks: TeamTask[]) {
   const statusOrder: Record<TaskStatus, number> = {
-    doing: 0,
+    in_progress: 0,
     todo: 1,
     done: 2,
   };

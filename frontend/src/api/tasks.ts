@@ -2,7 +2,8 @@ import type { User } from 'firebase/auth';
 
 import { fetchWithAuth, readErrorDetail } from './http';
 
-export type TaskStatus = 'todo' | 'doing' | 'done';
+export type TaskStatus = 'todo' | 'in_progress' | 'done';
+type ApiTaskStatus = TaskStatus | 'doing';
 
 export type TeamTaskSummary = {
   id: string;
@@ -42,7 +43,7 @@ type ApiTask = {
   body: string;
   assignee_user_id?: string | null;
   assignee_name?: string | null;
-  status: TaskStatus;
+  status: ApiTaskStatus;
   due_at?: string | null;
   created_at: string;
   updated_at: string;
@@ -183,11 +184,15 @@ function toTaskSummary(task: ApiTask): TeamTaskSummary {
     body: task.body,
     assignee_user_id: task.assignee_user_id ?? null,
     assignee_name: task.assignee_name ?? null,
-    status: task.status,
+    status: normalizeTaskStatus(task.status),
     due_at: task.due_at ? toTimestamp(task.due_at) : null,
     created_at: toTimestamp(task.created_at),
     updated_at: toTimestamp(task.updated_at),
   };
+}
+
+function normalizeTaskStatus(status: ApiTaskStatus): TaskStatus {
+  return status === 'doing' ? 'in_progress' : status;
 }
 
 function toTimestamp(value: string) {
