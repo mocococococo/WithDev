@@ -1,9 +1,13 @@
 from dataclasses import dataclass
+import logging
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 class AiboardConfigurationError(RuntimeError):
@@ -63,10 +67,34 @@ async def create_aiboard_meeting(
             )
             if response.status_code in (401, 403):
                 raise AiboardAuthenticationError("aiboard api key was rejected")
+            if response.status_code == 422:
+                validation_detail = _validation_error_detail(response)
+                logger.warning(
+                    "Aiboard meeting creation validation failed: "
+                    "status_code=%s detail=%s",
+                    response.status_code,
+                    validation_detail or "unavailable",
+                )
+                message = "aiboard request validation failed"
+                if validation_detail:
+                    message = f"{message}: {validation_detail}"
+                raise AiboardRequestError(message)
             response.raise_for_status()
     except AiboardAuthenticationError:
         raise
-    except httpx.HTTPError as exc:
+    except AiboardRequestError:
+        raise
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Aiboard meeting creation failed: status_code=%s",
+            exc.response.status_code,
+        )
+        raise AiboardRequestError("failed to create aiboard meeting") from exc
+    except httpx.RequestError as exc:
+        logger.warning(
+            "Aiboard meeting creation request failed: error_type=%s",
+            type(exc).__name__,
+        )
         raise AiboardRequestError("failed to create aiboard meeting") from exc
 
     try:
@@ -140,3 +168,42 @@ def _text(value: Any) -> str:
 
 def _number(value: Any) -> int | float | None:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _validation_error_detail(response: httpx.Response) -> str | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("detail"), list):
+        return None
+
+    errors: list[str] = []
+    for item in payload["detail"]:
+        if not isinstance(item, dict):
+            continue
+
+        location = item.get("loc")
+        if isinstance(location, list):
+            field = ".".join(
+                str(part)
+                for part in location
+                if isinstance(part, (str, int)) and not isinstance(part, bool)
+            )
+        else:
+            field = ""
+
+        message = _text(item.get("msg"))
+        error_type = _text(item.get("type"))
+        if not field and not message:
+            continue
+
+        summary = f"{field}: {message}" if field and message else field or message
+        if error_type:
+            summary = f"{summary} ({error_type})"
+        errors.append(summary)
+
+    if not errors:
+        return None
+    return "; ".join(errors)[:1_000]
