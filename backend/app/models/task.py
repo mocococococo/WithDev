@@ -36,8 +36,13 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     assignee_name: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notion_page_id: Mapped[str | None] = mapped_column(String(255))
+    notion_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     team = relationship("Team", back_populates="tasks")
     source_minutes = relationship("MeetingMinutes", back_populates="source_tasks")
     assignee_user = relationship("User", back_populates="assigned_tasks")
+    notion_sync_logs = relationship("NotionSyncLog", back_populates="task")
+
+

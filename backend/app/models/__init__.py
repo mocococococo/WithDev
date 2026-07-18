@@ -1,5 +1,14 @@
 from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
+from app.models.notion import (
+    AiboardNotionConnection,
+    AiboardNotionOAuthState,
+    AiboardNotionSyncLog,
+    AiboardTask,
+    NotionConnection,
+    NotionOAuthState,
+    NotionSyncLog,
+)
 from app.models.slack import (
     AiboardSlackConnection,
     AiboardSlackOAuthState,
@@ -16,6 +25,13 @@ from app.models.user import User
 __all__ = [
     "Meeting",
     "MeetingMinutes",
+    "AiboardNotionConnection",
+    "AiboardNotionOAuthState",
+    "AiboardNotionSyncLog",
+    "AiboardTask",
+    "NotionConnection",
+    "NotionOAuthState",
+    "NotionSyncLog",
     "AiboardSlackConnection",
     "AiboardSlackOAuthState",
     "AiboardSlackPostLog",
@@ -24,6 +40,7 @@ __all__ = [
     "SlackPostLog",
     "Task",
     "Team",
+    "TeamInvite",
     "TeamMember",
     "User",
 ]

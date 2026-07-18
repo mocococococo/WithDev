@@ -20,6 +20,8 @@ class Team(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     tasks = relationship("Task", back_populates="team")
     slack_connections = relationship("SlackConnection", back_populates="team")
     slack_oauth_states = relationship("SlackOAuthState", back_populates="team")
+    notion_connections = relationship("NotionConnection", back_populates="team")
+    notion_oauth_states = relationship("NotionOAuthState", back_populates="team")
     invites = relationship("TeamInvite", back_populates="team")
 
 
@@ -83,3 +85,4 @@ class TeamInvite(UUIDPrimaryKeyMixin, Base):
 
     team = relationship("Team", back_populates="invites")
     created_by_user = relationship("User", back_populates="created_team_invites")
+

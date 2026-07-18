@@ -3,7 +3,6 @@ from functools import lru_cache
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 
@@ -16,6 +15,9 @@ class Settings:
     slack_client_id: str | None
     slack_client_secret: str | None
     slack_redirect_uri: str | None
+    notion_client_id: str | None
+    notion_client_secret: str | None
+    notion_redirect_uri: str | None
     frontend_base_url: str
     aiboard_allowed_service_account: str | None
     aiboard_expected_audience: str | None
@@ -35,6 +37,9 @@ class Settings:
         self.slack_client_id = os.getenv("SLACK_CLIENT_ID")
         self.slack_client_secret = os.getenv("SLACK_CLIENT_SECRET")
         self.slack_redirect_uri = os.getenv("SLACK_REDIRECT_URI")
+        self.notion_client_id = os.getenv("NOTION_CLIENT_ID")
+        self.notion_client_secret = os.getenv("NOTION_CLIENT_SECRET")
+        self.notion_redirect_uri = os.getenv("NOTION_REDIRECT_URI")
         self.frontend_base_url = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:5173")
         self.aiboard_allowed_service_account = os.getenv("AIBOARD_ALLOWED_SERVICE_ACCOUNT")
         self.aiboard_expected_audience = os.getenv("AIBOARD_EXPECTED_AUDIENCE")
@@ -44,8 +49,8 @@ class Settings:
 
 
 def _parse_csv_env(name: str) -> list[str]:
-    value = os.getenv(name, "")
-    return [item.strip() for item in value.split(",") if item.strip()]
+    raw_value = os.getenv(name, "")
+    return [value.strip() for value in raw_value.split(",") if value.strip()]
 
 
 @lru_cache
