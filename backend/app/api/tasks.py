@@ -14,6 +14,12 @@ from app.models.minutes import MeetingMinutes
 from app.models.task import Task
 from app.models.team import TeamMember
 from app.models.user import User
+from app.services.notion_repository import (
+    create_notion_sync_log,
+    get_active_notion_connection,
+    mark_task_notion_synced,
+)
+from app.services.notion_service import NotionApiError, sync_task_page
 from app.services.tasks_service import (
     TaskGenerationError,
     generate_task_actions_from_minutes,
@@ -65,6 +71,17 @@ class TaskUpdateRequest(BaseModel):
     assignee_name: str | None = None
     status: str | None = None
     due_at: datetime | None = None
+
+
+class NotionSyncBody(BaseModel):
+    status: str
+    task_id: UUID
+    notion_page_id: str
+    synced_at: datetime
+
+
+class NotionSyncResponse(BaseModel):
+    notion_sync: NotionSyncBody
 
 
 class TeamMemberBody(BaseModel):
@@ -222,6 +239,87 @@ async def update_task(
     await session.commit()
     await session.refresh(task)
     return TaskResponse(task=_task_body(task))
+
+
+@router.post("/tasks/{task_id}/notion-sync", response_model=NotionSyncResponse)
+async def sync_task_to_notion(
+    task_id: UUID,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> NotionSyncResponse:
+    task = await _get_accessible_task(
+        session=session,
+        auth_user=auth_user,
+        task_id=task_id,
+    )
+    connection = await get_active_notion_connection(
+        session=session,
+        team_id=task.team_id,
+    )
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="notion connection not found",
+        )
+
+    database_id = (connection.default_database_id or "").strip()
+    if not database_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="notion default database is not configured",
+        )
+
+    try:
+        notion_page = await sync_task_page(
+            access_token=connection.access_token,
+            database_id=database_id,
+            task_id=str(task.id),
+            title=task.title,
+            body=task.body,
+            status=task.status,
+            assignee_name=task.assignee_name,
+            due_at=task.due_at,
+            notion_page_id=task.notion_page_id,
+        )
+    except NotionApiError as exc:
+        await create_notion_sync_log(
+            session=session,
+            task=task,
+            connection=connection,
+            notion_page_id=task.notion_page_id,
+            status="failed",
+            error_message=str(exc),
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to sync task to notion",
+        ) from exc
+
+    synced_at = datetime.now(timezone.utc)
+    await mark_task_notion_synced(
+        session=session,
+        task=task,
+        notion_page_id=notion_page.id,
+        synced_at=synced_at,
+    )
+    await create_notion_sync_log(
+        session=session,
+        task=task,
+        connection=connection,
+        notion_page_id=notion_page.id,
+        status="success",
+    )
+    await session.commit()
+
+    return NotionSyncResponse(
+        notion_sync=NotionSyncBody(
+            status="success",
+            task_id=task.id,
+            notion_page_id=notion_page.id,
+            synced_at=synced_at,
+        )
+    )
 
 
 @router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
