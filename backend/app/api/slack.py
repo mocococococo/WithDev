@@ -397,7 +397,7 @@ async def _handle_aiboard_slack_oauth_callback(
     oauth_state.consumed_at = datetime.now(timezone.utc)
     await session.commit()
 
-    return _redirect_to_frontend("/slack/aiboard/success", aiboard_meeting_id=meeting_id)
+    return _redirect_to_aiboard_meeting(meeting_id)
 
 
 async def _save_slack_connection(
@@ -545,6 +545,18 @@ def _redirect_to_frontend(
     if query:
         url = f"{url}?{query}"
     return RedirectResponse(url=url)
+
+
+def _redirect_to_aiboard_meeting(meeting_id: UUID) -> RedirectResponse:
+    base_url = (settings.aiboard_frontend_base_url or "").strip().rstrip("/")
+    if not base_url:
+        return _redirect_to_frontend(
+            "/slack/aiboard/success",
+            aiboard_meeting_id=meeting_id,
+        )
+
+    query = urlencode({"meetingId": str(meeting_id)})
+    return RedirectResponse(url=f"{base_url}/?{query}")
 
 
 def _is_expired(value: datetime) -> bool:
