@@ -62,6 +62,14 @@ import {
   type SlackConnectionStatus,
 } from './api/slack';
 import {
+  fetchNotionConnection,
+  fetchNotionDatabases,
+  startNotionOAuth,
+  updateNotionDefaultDatabase,
+  type NotionConnectionStatus,
+  type NotionDatabase,
+} from './api/notion';
+import {
   acceptTeamInvite,
   createTeam,
   fetchInvitePreview,
@@ -82,6 +90,7 @@ type SlackNotice = {
   teamId: string | null;
   message: string;
 } | null;
+type NotionNotice = SlackNotice;
 
 type TeamTask = TeamTaskSummary & {
   roadmap: TaskRoadmap;
@@ -153,6 +162,30 @@ function readSlackRedirectNotice(): SlackNotice {
     message: isSuccess
       ? 'Slack連携が完了しました。'
       : `Slack連携に失敗しました。${reason ? ` (${reason})` : ''}`,
+  };
+}
+
+function readNotionRedirectNotice(): NotionNotice {
+  if (typeof window === 'undefined') return null;
+
+  const { pathname, search } = window.location;
+  if (pathname !== '/notion/success' && pathname !== '/notion/error') {
+    return null;
+  }
+
+  const params = new URLSearchParams(search);
+  const teamId = params.get('team_id');
+  const reason = params.get('reason');
+  const isSuccess = pathname === '/notion/success';
+
+  window.history.replaceState({}, '', '/');
+
+  return {
+    type: isSuccess ? 'success' : 'error',
+    teamId,
+    message: isSuccess
+      ? 'Notion連携が完了しました。'
+      : `Notion連携に失敗しました。${reason ? ` (${reason})` : ''}`,
   };
 }
 
@@ -848,6 +881,177 @@ function SlackSettingsPanel({ user, team }: SlackSettingsPanelProps) {
   );
 }
 
+type NotionSettingsPanelProps = {
+  user: User;
+  team: UserTeamSummary;
+};
+
+function NotionSettingsPanel({ user, team }: NotionSettingsPanelProps) {
+  const [connection, setConnection] = useState<NotionConnectionStatus | null>(null);
+  const [databases, setDatabases] = useState<NotionDatabase[]>([]);
+  const [selectedDatabaseId, setSelectedDatabaseId] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isStartingNotion, setIsStartingNotion] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const selectedDatabase = databases.find((database) => database.id === selectedDatabaseId) ?? null;
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    setIsLoading(true);
+    setError(null);
+    setSuccess(null);
+    setConnection(null);
+    setDatabases([]);
+    setSelectedDatabaseId('');
+
+    void fetchNotionConnection(user, team.team_id)
+      .then(async (nextConnection) => {
+        if (isCancelled) return;
+        setConnection(nextConnection);
+
+        if (!nextConnection.connected) {
+          return;
+        }
+
+        const nextDatabases = await fetchNotionDatabases(user, team.team_id);
+        if (isCancelled) return;
+        setDatabases(nextDatabases);
+        setSelectedDatabaseId(
+          nextConnection.default_database_id || nextDatabases[0]?.id || '',
+        );
+      })
+      .catch((err) => {
+        if (!isCancelled) {
+          setError(err instanceof Error ? err.message : 'Notion連携状態を取得できませんでした。');
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [team.team_id, user]);
+
+  const handleStartNotionOAuth = async () => {
+    setError(null);
+    setSuccess(null);
+    setIsStartingNotion(true);
+    try {
+      const url = await startNotionOAuth(user, team.team_id);
+      window.location.assign(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Notion連携を開始できませんでした。');
+      setIsStartingNotion(false);
+    }
+  };
+
+  const handleSaveDefaultDatabase = async () => {
+    if (!selectedDatabaseId || isSaving) return;
+
+    setError(null);
+    setSuccess(null);
+    setIsSaving(true);
+    try {
+      const nextConnection = await updateNotionDefaultDatabase(
+        user,
+        team.team_id,
+        selectedDatabaseId,
+        selectedDatabase?.title ?? null,
+      );
+      setConnection(nextConnection);
+      setSuccess('Notionの既定同期先を保存しました。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Notionの既定同期先を保存できませんでした。');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <section className="notion-settings-panel">
+      <div className="section-title-row">
+        <span className="section-icon">
+          <FileText size={22} />
+        </span>
+        <div>
+          <p className="eyebrow">Notion</p>
+          <h2>Notion連携</h2>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="inline-loading">
+          <Loader2 className="spin" size={18} />
+          <span>Notion連携状態を確認中</span>
+        </div>
+      ) : connection?.connected ? (
+        <div className="notion-settings-body">
+          <p className="subtle-copy">
+            {connection.notion_workspace_name
+              ? `${connection.notion_workspace_name} と連携済みです。`
+              : 'Notionワークスペースと連携済みです。'}
+          </p>
+          <label className="field-label" htmlFor="default-notion-database">
+            既定のタスク同期先データベース
+          </label>
+          <div className="notion-select-row">
+            <span className="select-icon">
+              <ClipboardList size={18} />
+            </span>
+            <select
+              id="default-notion-database"
+              value={selectedDatabaseId}
+              onChange={(event) => setSelectedDatabaseId(event.target.value)}
+              disabled={databases.length === 0}
+            >
+              {databases.length === 0 ? (
+                <option value="">利用できるデータベースがありません</option>
+              ) : (
+                databases.map((database) => (
+                  <option key={database.id} value={database.id}>
+                    {database.title}
+                  </option>
+                ))
+              )}
+            </select>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void handleSaveDefaultDatabase()}
+              disabled={!selectedDatabaseId || isSaving}
+            >
+              {isSaving ? <Loader2 className="spin" size={18} /> : <Save size={18} />}
+              保存
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="notion-empty">
+          <p>Notion連携は未設定です。</p>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => void handleStartNotionOAuth()}
+            disabled={isStartingNotion}
+          >
+            {isStartingNotion ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+            Notion連携
+          </button>
+        </div>
+      )}
+
+      {error && <p className="error-text">{error}</p>}
+      {success && <p className="success-text">{success}</p>}
+    </section>
+  );
+}
 type MeetingListScreenProps = {
   user: User;
   team: UserTeamSummary;
@@ -859,6 +1063,7 @@ type MeetingListScreenProps = {
   error: string | null;
   taskError: string | null;
   slackNotice: SlackNotice;
+  notionNotice: NotionNotice;
   onBackToTeams: () => void;
   onCreateMeeting: (title: string, initialTheme: string) => Promise<void>;
   onOpenMeeting: (meetingId: string) => void;
@@ -878,6 +1083,7 @@ function MeetingListScreen({
   error,
   taskError,
   slackNotice,
+  notionNotice,
   onBackToTeams,
   onCreateMeeting,
   onOpenMeeting,
@@ -960,6 +1166,11 @@ function MeetingListScreen({
               {slackNotice.message}
             </p>
           )}
+          {notionNotice && (
+            <p className={notionNotice.type === 'success' ? 'success-text' : 'error-text'}>
+              {notionNotice.message}
+            </p>
+          )}
           {slackActionError && <p className="error-text">{slackActionError}</p>}
 
           {showCreateForm && (
@@ -1009,8 +1220,9 @@ function MeetingListScreen({
         </div>
 
         <aside className="team-side-panel">
-                    <TeamInvitePanel user={user} teamId={team.team_id} />
-<SlackSettingsPanel user={user} team={team} />
+          <TeamInvitePanel user={user} teamId={team.team_id} />
+          <SlackSettingsPanel user={user} team={team} />
+          <NotionSettingsPanel user={user} team={team} />
           <TaskSidebar
             currentUserId={currentUserId}
             tasks={tasks}
@@ -2062,6 +2274,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const [meetingError, setMeetingError] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
   const [slackNotice, setSlackNotice] = useState<SlackNotice>(null);
+  const [notionNotice, setNotionNotice] = useState<NotionNotice>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -2077,12 +2290,15 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
 
   useEffect(() => {
     let isCancelled = false;
-    const redirectNotice = readSlackRedirectNotice();
+    const slackRedirectNotice = readSlackRedirectNotice();
+    const notionRedirectNotice = slackRedirectNotice ? null : readNotionRedirectNotice();
+    const redirectTeamId = slackRedirectNotice?.teamId ?? notionRedirectNotice?.teamId;
 
     setIsInitializing(true);
     setWorkspaceError(null);
     setMeetingError(null);
-    setSlackNotice(redirectNotice);
+    setSlackNotice(slackRedirectNotice);
+    setNotionNotice(notionRedirectNotice);
     setSelectedTeamId(null);
     setSelectedMeetingId(null);
     setSelectedTaskId(null);
@@ -2099,10 +2315,10 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         setCurrentUserId(context.user.id);
         setTeams(nextTeams);
         if (
-          redirectNotice?.teamId &&
-          nextTeams.some((team) => team.team_id === redirectNotice.teamId)
+          redirectTeamId &&
+          nextTeams.some((team) => team.team_id === redirectTeamId)
         ) {
-          setSelectedTeamId(redirectNotice.teamId);
+          setSelectedTeamId(redirectTeamId);
           setSelectedTeamView('meetings');
         }
       })
@@ -2447,6 +2663,12 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
             ? slackNotice
             : null
         }
+        notionNotice={
+          notionNotice &&
+          (!notionNotice.teamId || notionNotice.teamId === selectedTeam.team_id)
+            ? notionNotice
+            : null
+        }
         onBackToTeams={() => {
           setSelectedTeamId(null);
           setSelectedMeetingId(null);
@@ -2506,3 +2728,4 @@ function App() {
 }
 
 export default App;
+
