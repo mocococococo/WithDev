@@ -1901,8 +1901,11 @@ function MeetingRoomScreen({
 
   const handleJoinMeeting = () => {
     if (!meeting.launch_url) return;
+    const meetingTab = window.open(meeting.launch_url, '_blank');
+    if (!meetingTab) return;
+
+    meetingTab.opener = null;
     setHasJoined(true);
-    window.location.assign(meeting.launch_url);
   };
 
   return (
