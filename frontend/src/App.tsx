@@ -456,7 +456,7 @@ function TeamSelectionScreen({ user, teams, onSelectTeam, onCreateTeam, onLogout
 }
 
 type MeetingCreateFormProps = {
-  onCreate: (title: string, initialTheme: string) => Promise<void>;
+  onCreate: (title: string, initialTheme: string) => Promise<string>;
   onCancel: () => void;
 };
 
@@ -464,18 +464,31 @@ function MeetingCreateForm({ onCreate, onCancel }: MeetingCreateFormProps) {
   const [title, setTitle] = useState('');
   const [initialTheme, setInitialTheme] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [popupError, setPopupError] = useState<string | null>(null);
   const canSubmit = title.trim().length > 0 && !isSubmitting;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canSubmit) return;
 
+    setPopupError(null);
+    const meetingTab = window.open('about:blank', '_blank');
+    if (!meetingTab) {
+      setPopupError(
+        '新しいタブを開けませんでした。ブラウザでポップアップを許可してから、もう一度お試しください。',
+      );
+      return;
+    }
+    meetingTab.opener = null;
+
     setIsSubmitting(true);
     try {
-      await onCreate(title.trim(), initialTheme.trim());
+      const launchUrl = await onCreate(title.trim(), initialTheme.trim());
+      meetingTab.location.replace(launchUrl);
       setTitle('');
       setInitialTheme('');
     } catch {
+      meetingTab.close();
       // Parent components show the user-facing error.
     } finally {
       setIsSubmitting(false);
@@ -516,6 +529,8 @@ function MeetingCreateForm({ onCreate, onCancel }: MeetingCreateFormProps) {
         onChange={(event) => setInitialTheme(event.target.value)}
         placeholder="例: ユーザーが最初に迷う点を洗い出す"
       />
+
+      {popupError && <p className="error-text">{popupError}</p>}
 
       <div className="form-actions">
         <button className="secondary-button" type="button" onClick={onCancel}>
@@ -873,7 +888,7 @@ type MeetingListScreenProps = {
   taskError: string | null;
   slackNotice: SlackNotice;
   onBackToTeams: () => void;
-  onCreateMeeting: (title: string, initialTheme: string) => Promise<void>;
+  onCreateMeeting: (title: string, initialTheme: string) => Promise<string>;
   onOpenMeeting: (meetingId: string) => void;
   onOpenTasks: () => void;
   onOpenTask: (taskId: string) => void;
@@ -909,8 +924,9 @@ function MeetingListScreen({
   }, [filter, meetings]);
 
   const handleCreateMeeting = async (title: string, initialTheme: string) => {
-    await onCreateMeeting(title, initialTheme);
+    const launchUrl = await onCreateMeeting(title, initialTheme);
     setShowCreateForm(false);
+    return launchUrl;
   };
 
   const handleStartSlackOAuth = async () => {
@@ -2099,7 +2115,9 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     clearInvitePath();
   };
   const handleCreateMeeting = async (title: string, initialTheme: string) => {
-    if (!selectedTeam) return;
+    if (!selectedTeam) {
+      throw new Error('チームが選択されていません。');
+    }
 
     setMeetingError(null);
     try {
@@ -2113,7 +2131,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         launch.meeting,
         ...currentMeetings.filter((meeting) => meeting.id !== launch.meeting.id),
       ]);
-      window.location.assign(launch.launch_url);
+      return launch.launch_url;
     } catch (err) {
       setMeetingError(err instanceof Error ? err.message : 'ミーティング作成に失敗しました。');
       throw err;
