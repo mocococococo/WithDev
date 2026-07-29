@@ -1,3 +1,4 @@
+from urllib.parse import quote
 from uuid import UUID
 
 from sqlalchemy import select
@@ -20,6 +21,19 @@ class SlackConnectionNotFoundError(Exception):
 
 class SlackPostError(Exception):
     pass
+
+
+def build_team_tasks_url(*, frontend_base_url: str, team_id: UUID) -> str:
+    base_url = frontend_base_url.rstrip("/")
+    return f"{base_url}/teams/{quote(str(team_id), safe='')}/tasks"
+
+
+def build_minutes_upload_comment(*, frontend_base_url: str, team_id: UUID) -> str:
+    tasks_url = build_team_tasks_url(
+        frontend_base_url=frontend_base_url,
+        team_id=team_id,
+    )
+    return f"議事録を共有します。\nタスク一覧: {tasks_url}"
 
 
 async def get_active_slack_connection(
@@ -65,6 +79,7 @@ async def create_slack_post_for_minutes(
     team_id: UUID,
     minutes: MeetingMinutes,
     channel_id: str,
+    frontend_base_url: str,
     document_title: str | None = None,
 ) -> SlackPostLog:
     connection = await get_active_slack_connection(session=session, team_id=team_id)
@@ -81,6 +96,10 @@ async def create_slack_post_for_minutes(
             filename=build_minutes_markdown_filename(title=normalized_title),
             title=normalized_title,
             content=build_minutes_markdown(title=normalized_title, body=minutes.body),
+            initial_comment=build_minutes_upload_comment(
+                frontend_base_url=frontend_base_url,
+                team_id=team_id,
+            ),
         )
     except SlackApiError as exc:
         failed_log = SlackPostLog(

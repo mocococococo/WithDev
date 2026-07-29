@@ -293,6 +293,7 @@ async def post_minutes_to_slack(
             team_id=meeting.team_id,
             minutes=minutes,
             channel_id=channel_id,
+            frontend_base_url=settings.frontend_base_url,
             document_title=meeting.title,
         )
     except SlackConnectionNotFoundError as exc:

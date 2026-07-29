@@ -1,8 +1,13 @@
 import unittest
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import httpx
 
+from app.services.slack_post_service import (
+    build_minutes_upload_comment,
+    build_team_tasks_url,
+)
 from app.services.slack_service import (
     SLACK_BOT_SCOPES,
     SLACK_COMPLETE_UPLOAD_EXTERNAL_URL,
@@ -31,6 +36,35 @@ class MinutesMarkdownTests(unittest.TestCase):
     def test_file_write_scope_is_requested(self) -> None:
         self.assertIn("files:write", SLACK_BOT_SCOPES)
         self.assertIn("channels:join", SLACK_BOT_SCOPES)
+
+
+class MinutesTasksLinkTests(unittest.TestCase):
+    def test_builds_team_tasks_url(self) -> None:
+        team_id = UUID("c50461c7-06d4-4c5e-b20e-38e8292cbe07")
+
+        self.assertEqual(
+            build_team_tasks_url(
+                frontend_base_url="https://withdev.example.com/",
+                team_id=team_id,
+            ),
+            "https://withdev.example.com/teams/c50461c7-06d4-4c5e-b20e-38e8292cbe07/tasks",
+        )
+
+    def test_builds_minutes_upload_comment_with_tasks_url(self) -> None:
+        team_id = UUID("c50461c7-06d4-4c5e-b20e-38e8292cbe07")
+
+        self.assertEqual(
+            build_minutes_upload_comment(
+                frontend_base_url="https://withdev.example.com",
+                team_id=team_id,
+            ),
+            (
+                "議事録を共有します。\n"
+                "タスク一覧: "
+                "https://withdev.example.com/teams/"
+                "c50461c7-06d4-4c5e-b20e-38e8292cbe07/tasks"
+            ),
+        )
 
 
 class UploadMarkdownFileTests(unittest.IsolatedAsyncioTestCase):
@@ -71,6 +105,10 @@ class UploadMarkdownFileTests(unittest.IsolatedAsyncioTestCase):
             filename="議事録.md",
             title="議事録",
             content=content,
+            initial_comment=(
+                "議事録を共有します。\n"
+                "タスク一覧: https://withdev.example.com/teams/team1/tasks"
+            ),
         )
 
         self.assertEqual(result.channel_id, "C123")
@@ -96,6 +134,13 @@ class UploadMarkdownFileTests(unittest.IsolatedAsyncioTestCase):
         complete_upload = client.post.await_args_list[3]
         self.assertEqual(complete_upload.args[0], SLACK_COMPLETE_UPLOAD_EXTERNAL_URL)
         self.assertEqual(complete_upload.kwargs["json"]["channel_id"], "C123")
+        self.assertEqual(
+            complete_upload.kwargs["json"]["initial_comment"],
+            (
+                "議事録を共有します。\n"
+                "タスク一覧: https://withdev.example.com/teams/team1/tasks"
+            ),
+        )
         self.assertEqual(
             complete_upload.kwargs["json"]["files"],
             [{"id": "F123", "title": "議事録"}],

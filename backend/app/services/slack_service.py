@@ -174,6 +174,7 @@ async def upload_markdown_file(
     filename: str,
     title: str,
     content: str,
+    initial_comment: str | None = None,
 ) -> SlackFileUploadResult:
     file_bytes = content.encode("utf-8")
     authorization_headers = {"Authorization": f"Bearer {bot_access_token}"}
@@ -210,12 +211,15 @@ async def upload_markdown_file(
         if not file_response.is_success:
             raise SlackApiError(f"slack file upload failed: {file_response.status_code}")
 
+        complete_request: dict[str, object] = {
+            "files": [{"id": file_id, "title": title}],
+            "channel_id": channel_id,
+        }
+        if initial_comment:
+            complete_request["initial_comment"] = initial_comment
         complete_response = await client.post(
             SLACK_COMPLETE_UPLOAD_EXTERNAL_URL,
-            json={
-                "files": [{"id": file_id, "title": title}],
-                "channel_id": channel_id,
-            },
+            json=complete_request,
             headers=authorization_headers,
         )
         complete_payload = _parse_slack_payload(complete_response)
