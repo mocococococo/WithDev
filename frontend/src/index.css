@@ -540,7 +540,6 @@ h2 {
 .task-nav-button,
 .my-task-panel,
 .slack-settings-panel,
-.notion-settings-panel,
 .task-card {
   border: 1px solid #e4e7ec;
   border-radius: 8px;
@@ -548,17 +547,30 @@ h2 {
   color: #111827;
 }
 
-.slack-settings-panel,
-.notion-settings-panel {
+.slack-settings-panel {
   display: grid;
   gap: 14px;
   padding: 18px;
 }
 
-.slack-settings-body,
-.notion-settings-body {
+.slack-settings-body {
   display: grid;
   gap: 10px;
+}
+
+.connection-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.connection-status-row .subtle-copy {
+  min-width: 0;
+}
+
+.connection-status-row .secondary-button {
+  flex: 0 0 auto;
 }
 
 .task-nav-button {
@@ -1060,8 +1072,7 @@ h2 {
 }
 
 .inline-loading,
-.slack-empty,
-.notion-empty {
+.slack-empty {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1069,8 +1080,7 @@ h2 {
   font-weight: 800;
 }
 
-.slack-empty,
-.notion-empty {
+.slack-empty {
   justify-content: space-between;
 }
 
@@ -1079,8 +1089,7 @@ h2 {
   gap: 8px;
 }
 
-.slack-select-row,
-.notion-select-row {
+.slack-select-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -1099,8 +1108,7 @@ h2 {
   color: #344054;
 }
 
-.slack-select-row select,
-.notion-select-row select {
+.slack-select-row select {
   min-height: 42px;
   width: 100%;
   border: 1px solid #d0d5dd;
@@ -1111,8 +1119,7 @@ h2 {
   outline: none;
 }
 
-.slack-select-row select:focus,
-.notion-select-row select:focus {
+.slack-select-row select:focus {
   border-color: #60a5fa;
   box-shadow: 0 0 0 3px rgb(96 165 250 / 18%);
 }
@@ -1340,24 +1347,23 @@ h2 {
   .toolbar-actions .primary-button,
   .toolbar-actions .secondary-button,
   .slack-empty,
-  .notion-empty,
   .slack-select-row,
-  .notion-select-row,
   .slack-select-row .secondary-button,
-  .slack-select-row .primary-button,
-  .notion-select-row .secondary-button,
-  .notion-select-row .primary-button {
+  .slack-select-row .primary-button {
     width: 100%;
   }
 
   .slack-empty,
-  .notion-empty {
+  .connection-status-row {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .slack-select-row,
-  .notion-select-row {
+  .connection-status-row .secondary-button {
+    width: 100%;
+  }
+
+  .slack-select-row {
     grid-template-columns: 1fr;
   }
 
