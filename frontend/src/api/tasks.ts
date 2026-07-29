@@ -35,6 +35,14 @@ export type TaskUpdateInput = {
   due_at?: string | null;
 };
 
+export type TaskCreateInput = {
+  title: string;
+  body?: string;
+  assignee_user_id?: string | null;
+  status: TaskStatus;
+  due_at?: string | null;
+};
+
 type ApiTask = {
   id: string;
   team_id: string;
@@ -104,6 +112,28 @@ export async function fetchTeamTasks(
   }
 
   return payload.tasks.map(toTaskSummary);
+}
+
+export async function createTeamTask(
+  user: User,
+  teamId: string,
+  input: TaskCreateInput,
+): Promise<TeamTaskSummary> {
+  const response = await fetchWithAuth(user, `/api/teams/${teamId}/tasks`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(toTaskError(detail, response.status));
+  }
+
+  const payload = (await response.json()) as ApiTaskResponse;
+  if (!payload.task) {
+    throw new Error('タスク作成APIのレスポンスを読み取れませんでした。');
+  }
+
+  return toTaskSummary(payload.task);
 }
 
 export async function generateTeamTasks(
@@ -212,6 +242,9 @@ function toTaskError(detail: string, status: number) {
   }
   if (detail === 'failed to generate tasks') {
     return 'タスク生成に失敗しました。時間をおいて再試行してください。';
+  }
+  if (detail === 'task title is required') {
+    return 'タスクタイトルを入力してください。';
   }
   if (detail === 'assignee_user_id must be a team member') {
     return '担当者はチームメンバーから選択してください。';

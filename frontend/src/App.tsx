@@ -28,11 +28,13 @@ import {
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import {
+  createTeamTask,
   deleteTask,
   fetchTeamMembers,
   fetchTeamTasks,
   generateTeamTasks,
   updateTask,
+  type TaskCreateInput,
   type TaskStatus,
   type TaskUpdateInput,
   type TeamMemberSummary,
@@ -1060,27 +1062,157 @@ type TeamTaskScreenProps = {
   user: User;
   team: UserTeamSummary;
   tasks: TeamTask[];
+  members: TeamMemberSummary[];
   currentUserId: string | null;
   isLoading: boolean;
   error: string | null;
   onBackToMeetings: () => void;
+  onCreateTask: (input: TaskCreateInput) => Promise<void>;
   onOpenTask: (taskId: string) => void;
   onLogout: () => void;
 };
+
+type TaskCreateFormProps = {
+  members: TeamMemberSummary[];
+  onCreate: (input: TaskCreateInput) => Promise<void>;
+  onCancel: () => void;
+};
+
+function TaskCreateForm({ members, onCreate, onCancel }: TaskCreateFormProps) {
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [status, setStatus] = useState<TaskStatus>('todo');
+  const [assigneeUserId, setAssigneeUserId] = useState('');
+  const [dueAt, setDueAt] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const canSubmit = title.trim().length > 0 && !isSubmitting;
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSubmit) return;
+
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await onCreate({
+        title: title.trim(),
+        body: body.trim(),
+        status,
+        assignee_user_id: assigneeUserId || null,
+        due_at: toDatePayload(dueAt),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'タスクの作成に失敗しました。');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <form className="task-create-panel" onSubmit={handleSubmit}>
+      <div className="form-header">
+        <span className="form-icon">
+          <ClipboardList size={20} />
+        </span>
+        <div>
+          <h2>新しいタスク</h2>
+          <p>チームで管理するタスクを手動で登録します。</p>
+        </div>
+      </div>
+
+      <div className="task-edit-grid">
+        <label className="task-field">
+          <span>タイトル</span>
+          <input
+            value={title}
+            maxLength={255}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="例: リリース手順を確認する"
+            autoFocus
+          />
+        </label>
+
+        <label className="task-field">
+          <span>ステータス</span>
+          <select
+            value={status}
+            onChange={(event) => setStatus(event.target.value as TaskStatus)}
+          >
+            {(Object.keys(taskStatusLabels) as TaskStatus[]).map((statusKey) => (
+              <option key={statusKey} value={statusKey}>
+                {taskStatusLabels[statusKey]}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="task-field">
+          <span>期限</span>
+          <input type="date" value={dueAt} onChange={(event) => setDueAt(event.target.value)} />
+        </label>
+      </div>
+
+      <label className="task-field">
+        <span>本文（任意）</span>
+        <textarea
+          value={body}
+          onChange={(event) => setBody(event.target.value)}
+          placeholder="タスクの目的や完了条件を入力してください。"
+        />
+      </label>
+
+      <label className="task-field">
+        <span>担当者</span>
+        <select
+          value={assigneeUserId}
+          onChange={(event) => setAssigneeUserId(event.target.value)}
+        >
+          <option value="">未担当</option>
+          {members.map((member) => (
+            <option key={member.user_id} value={member.user_id}>
+              {member.display_name || member.email}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {error && <p className="error-text">{error}</p>}
+
+      <div className="form-actions">
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={onCancel}
+          disabled={isSubmitting}
+        >
+          キャンセル
+        </button>
+        <button className="primary-button" type="submit" disabled={!canSubmit}>
+          {isSubmitting ? <Loader2 className="spin" size={18} /> : <Plus size={18} />}
+          {isSubmitting ? '作成中' : 'タスクを作成'}
+        </button>
+      </div>
+    </form>
+  );
+}
 
 function TeamTaskScreen({
   user,
   team,
   tasks,
+  members,
   currentUserId,
   isLoading,
   error,
   onBackToMeetings,
+  onCreateTask,
   onOpenTask,
   onLogout,
 }: TeamTaskScreenProps) {
   const [statusFilter, setStatusFilter] = useState<TaskFilter>('all');
   const [ownershipFilter, setOwnershipFilter] = useState<TaskOwnershipFilter>('all');
+  const [showCreateForm, setShowCreateForm] = useState(false);
   const visibleTasks = useMemo(() => {
     return sortTasks(
       tasks.filter((task) => {
@@ -1091,6 +1223,13 @@ function TeamTaskScreen({
       }),
     );
   }, [currentUserId, ownershipFilter, statusFilter, tasks]);
+
+  const handleCreateTask = async (input: TaskCreateInput) => {
+    await onCreateTask(input);
+    setStatusFilter('all');
+    setOwnershipFilter('all');
+    setShowCreateForm(false);
+  };
 
   return (
     <main className="app-layout">
@@ -1114,7 +1253,23 @@ function TeamTaskScreen({
             {visibleTasks.length} 件を表示 / 全 {tasks.length} 件
           </p>
         </div>
+        <button
+          className="primary-button"
+          type="button"
+          onClick={() => setShowCreateForm((value) => !value)}
+        >
+          <Plus size={18} />
+          新規タスク
+        </button>
       </section>
+
+      {showCreateForm && (
+        <TaskCreateForm
+          members={members}
+          onCreate={handleCreateTask}
+          onCancel={() => setShowCreateForm(false)}
+        />
+      )}
 
       <section className="task-filter-groups" aria-label="タスクの絞り込み">
         <div className="task-filter-group">
@@ -2172,6 +2327,17 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setSelectedTeamView('tasks');
   };
 
+  const handleCreateTask = async (input: TaskCreateInput) => {
+    if (!selectedTeam) return;
+
+    setTaskError(null);
+    const createdTask = await createTeamTask(currentUser, selectedTeam.team_id, input);
+    setTasks((currentTasks) => [
+      withRoadmap(createdTask),
+      ...currentTasks.filter((task) => task.id !== createdTask.id),
+    ]);
+  };
+
   const handleSaveTask = async (taskId: string, input: TaskUpdateInput) => {
     setTaskError(null);
     const updatedTask = await updateTask(currentUser, taskId, input);
@@ -2259,10 +2425,12 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         user={currentUser}
         team={selectedTeam}
         tasks={teamTasks}
+        members={teamMembers}
         currentUserId={currentUserId}
         isLoading={isLoadingTasks}
         error={taskError}
         onBackToMeetings={() => setSelectedTeamView('meetings')}
+        onCreateTask={handleCreateTask}
         onOpenTask={(taskId) => {
           setSelectedMeetingId(null);
           setSelectedTaskId(taskId);

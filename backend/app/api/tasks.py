@@ -57,6 +57,14 @@ class TaskGenerateRequest(BaseModel):
     minutes_id: UUID
 
 
+class TaskCreateRequest(BaseModel):
+    title: str
+    body: str | None = None
+    assignee_user_id: UUID | None = None
+    status: str = "todo"
+    due_at: datetime | None = None
+
+
 class TaskGenerateResponse(BaseModel):
     tasks: list[TaskBody]
     created_count: int
@@ -130,6 +138,52 @@ async def list_team_tasks(
 
     result = await session.execute(statement.order_by(Task.updated_at.desc(), Task.created_at.desc()))
     return TaskListResponse(tasks=[_task_body(task) for task in result.scalars().all()])
+
+
+@router.post(
+    "/teams/{team_id}/tasks",
+    response_model=TaskResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_team_task(
+    team_id: UUID,
+    request: TaskCreateRequest,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskResponse:
+    await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
+
+    title = _clean_optional_string(request.title, 255)
+    if title is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="task title is required",
+        )
+
+    members = await _get_active_team_members(session=session, team_id=team_id)
+    member_map = {user.id: user for user, _role in members}
+    if request.assignee_user_id is not None and request.assignee_user_id not in member_map:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="assignee_user_id must be a team member",
+        )
+
+    assignee = member_map.get(request.assignee_user_id)
+    task = Task(
+        team_id=team_id,
+        source_minutes_id=None,
+        title=title,
+        body=_normalize_body(request.body, title),
+        assignee_user_id=request.assignee_user_id,
+        assignee_name=assignee.display_name if assignee is not None else None,
+        status=_validate_status(request.status),
+        due_at=request.due_at,
+        is_deleted=False,
+    )
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+    return TaskResponse(task=_task_body(task))
 
 
 @router.post("/teams/{team_id}/tasks/generate", response_model=TaskGenerateResponse)

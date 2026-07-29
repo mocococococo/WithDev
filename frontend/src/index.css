@@ -743,6 +743,21 @@ h2 {
   padding: 24px;
 }
 
+.task-create-panel {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 18px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgb(15 23 42 / 8%);
+  padding: 22px;
+}
+
+.task-create-panel .form-header {
+  margin-bottom: 0;
+}
+
 .task-detail-header {
   display: flex;
   align-items: flex-start;
