@@ -48,7 +48,10 @@ def generate_task_roadmap(
     try:
         genai.configure(api_key=settings.gemini_api_key)
         model = genai.GenerativeModel(settings.gemini_model)
-        response = model.generate_content(prompt)
+        response = model.generate_content(
+            prompt,
+            request_options={"timeout": 60},
+        )
     except Exception as exc:
         raise TaskRoadmapGenerationError("Gemini request failed") from exc
 

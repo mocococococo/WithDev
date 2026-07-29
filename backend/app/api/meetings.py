@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,10 +32,7 @@ from app.services.slack_post_service import (
     create_slack_post_for_minutes,
 )
 from app.services.team_access_service import require_team_member
-from app.api.tasks import (
-    generate_task_roadmap_background,
-    mark_minutes_roadmaps_for_regeneration,
-)
+from app.api.tasks import mark_minutes_roadmaps_for_regeneration
 
 
 router = APIRouter()
@@ -251,7 +248,6 @@ async def get_meeting_minutes(
 @router.post("/meetings/{meeting_id}/minutes/from-text", response_model=MinutesResponse)
 async def generate_and_save_meeting_minutes(
     meeting_id: UUID,
-    background_tasks: BackgroundTasks,
     request: MinutesFromTextRequest | None = None,
     auth_user: AuthenticatedUser = Depends(verify_firebase_user),
     session: AsyncSession = Depends(get_db_session),
@@ -265,7 +261,6 @@ async def generate_and_save_meeting_minutes(
         session=session,
         meeting=meeting,
         text=request.text if request else None,
-        background_tasks=background_tasks,
     )
     return MinutesResponse(minutes=_minutes_body(minutes))
 
@@ -276,7 +271,6 @@ async def generate_and_save_meeting_minutes(
 )
 async def generate_minutes_and_post_to_slack(
     meeting_id: UUID,
-    background_tasks: BackgroundTasks,
     request: MinutesToSlackRequest | None = None,
     auth_user: AuthenticatedUser = Depends(verify_firebase_user),
     session: AsyncSession = Depends(get_db_session),
@@ -298,7 +292,6 @@ async def generate_minutes_and_post_to_slack(
         session=session,
         meeting=meeting,
         text=request.text if request else None,
-        background_tasks=background_tasks,
     )
 
     try:
@@ -336,7 +329,6 @@ async def _generate_and_save_minutes(
     session: AsyncSession,
     meeting: Meeting,
     text: str | None,
-    background_tasks: BackgroundTasks | None = None,
 ) -> MeetingMinutes:
     normalized_text = _validate_minutes_text(text)
 
@@ -366,23 +358,13 @@ async def _generate_and_save_minutes(
         minutes.source_text = normalized_text
         minutes.is_deleted = False
 
-    roadmap_jobs = (
+    if is_minutes_update:
         await mark_minutes_roadmaps_for_regeneration(
             session=session,
             minutes_id=minutes.id,
         )
-        if is_minutes_update
-        else []
-    )
     await session.commit()
     await session.refresh(minutes)
-    if background_tasks is not None:
-        for task_id, generation_token in roadmap_jobs:
-            background_tasks.add_task(
-                generate_task_roadmap_background,
-                task_id,
-                generation_token,
-            )
     return minutes
 
 

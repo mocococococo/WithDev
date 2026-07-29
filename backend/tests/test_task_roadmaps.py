@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.api.tasks import (
+    RoadmapGenerateRequest,
     RoadmapStepUpdateRequest,
     _complete_all_roadmap_steps,
     _merge_generated_roadmap,
     _sync_task_completion_from_steps,
+    generate_task_roadmap_endpoint,
     update_roadmap_step,
 )
 from app.models.task import Task, TaskRoadmap, TaskRoadmapStep
@@ -227,6 +229,54 @@ class RoadmapStepApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(step.status, "in_progress")
         self.assertEqual(task.status, "in_progress")
+
+
+class RoadmapGenerationApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_waits_for_generation_and_returns_refreshed_roadmap(self) -> None:
+        task = make_task(status="in_progress")
+        task.roadmap.overview = ""
+        task.roadmap.generation_status = "generating"
+        refreshed_task = make_task(status="in_progress")
+        refreshed_task.id = task.id
+        refreshed_task.roadmap.overview = "生成された概要"
+        refreshed_task.roadmap.generation_status = "ready"
+        for index in range(3):
+            make_step(
+                refreshed_task.roadmap,
+                title=f"生成ステップ{index}",
+                position=index,
+            )
+        session = MagicMock()
+        session.commit = AsyncMock()
+        generation = AsyncMock()
+
+        with (
+            patch(
+                "app.api.tasks._get_accessible_task",
+                new_callable=AsyncMock,
+                return_value=task,
+            ),
+            patch(
+                "app.api.tasks.generate_task_roadmap_background",
+                generation,
+            ),
+            patch(
+                "app.api.tasks._get_task_for_roadmap_generation",
+                new_callable=AsyncMock,
+                return_value=refreshed_task,
+            ),
+        ):
+            response = await generate_task_roadmap_endpoint(
+                task_id=task.id,
+                request=RoadmapGenerateRequest(expected_version=task.roadmap.version),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        generation.assert_awaited_once()
+        session.expire_all.assert_called_once()
+        self.assertEqual(response.task.roadmap.generation_status, "ready")
+        self.assertEqual(len(response.task.roadmap.steps), 3)
 
 
 class RoadmapResponseParsingTests(unittest.TestCase):

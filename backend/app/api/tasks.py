@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -302,18 +302,15 @@ async def create_team_task(
 async def create_team_task_endpoint(
     team_id: UUID,
     request: TaskCreateRequest,
-    background_tasks: BackgroundTasks,
     auth_user: AuthenticatedUser = Depends(verify_firebase_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> TaskResponse:
-    response = await create_team_task(
+    return await create_team_task(
         team_id=team_id,
         request=request,
         auth_user=auth_user,
         session=session,
     )
-    background_tasks.add_task(generate_task_roadmap_background, response.task.id)
-    return response
 
 
 async def generate_team_tasks(
@@ -459,20 +456,15 @@ async def generate_team_tasks(
 async def generate_team_tasks_endpoint(
     team_id: UUID,
     request: TaskGenerateRequest,
-    background_tasks: BackgroundTasks,
     auth_user: AuthenticatedUser = Depends(verify_firebase_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> TaskGenerateResponse:
-    response = await generate_team_tasks(
+    return await generate_team_tasks(
         team_id=team_id,
         request=request,
         auth_user=auth_user,
         session=session,
     )
-    for task in response.tasks:
-        if task.roadmap is None or task.roadmap.generation_status in {"pending", "failed"}:
-            background_tasks.add_task(generate_task_roadmap_background, task.id)
-    return response
 
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
@@ -525,30 +517,21 @@ async def update_task(
 async def update_task_endpoint(
     task_id: UUID,
     request: TaskUpdateRequest,
-    background_tasks: BackgroundTasks,
     auth_user: AuthenticatedUser = Depends(verify_firebase_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> TaskResponse:
-    response = await update_task(
+    return await update_task(
         task_id=task_id,
         request=request,
         auth_user=auth_user,
         session=session,
     )
-    if (
-        response.task.status != "done"
-        and response.task.roadmap is not None
-        and response.task.roadmap.generation_status == "pending"
-    ):
-        background_tasks.add_task(generate_task_roadmap_background, task_id)
-    return response
 
 
 @router.post("/tasks/{task_id}/roadmap/generate", response_model=TaskResponse)
 async def generate_task_roadmap_endpoint(
     task_id: UUID,
     request: RoadmapGenerateRequest,
-    background_tasks: BackgroundTasks,
     auth_user: AuthenticatedUser = Depends(verify_firebase_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> TaskResponse:
@@ -567,13 +550,18 @@ async def generate_task_roadmap_endpoint(
     generation_token = _mark_roadmap_pending(roadmap)
     roadmap.has_source_updates = False
     await session.commit()
-    await session.refresh(task)
-    background_tasks.add_task(
-        generate_task_roadmap_background,
-        task.id,
-        generation_token,
+    await generate_task_roadmap_background(task.id, generation_token)
+    session.expire_all()
+    refreshed_task = await _get_task_for_roadmap_generation(
+        session=session,
+        task_id=task.id,
     )
-    return TaskResponse(task=_task_body(task))
+    if refreshed_task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="task not found",
+        )
+    return TaskResponse(task=_task_body(refreshed_task))
 
 
 @router.post(

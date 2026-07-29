@@ -4,7 +4,7 @@ from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,10 +39,7 @@ from app.services.slack_service import (
     list_public_channels,
     post_message,
 )
-from app.api.tasks import (
-    generate_task_roadmap_background,
-    mark_minutes_roadmaps_for_regeneration,
-)
+from app.api.tasks import mark_minutes_roadmaps_for_regeneration
 
 
 router = APIRouter()
@@ -388,7 +385,6 @@ async def post_aiboard_minutes_to_slack(
 @router.post("/meetings/finish", response_model=AiboardMeetingFinishResponse)
 async def finish_aiboard_meeting(
     request: AiboardMeetingFinishRequest,
-    background_tasks: BackgroundTasks,
     _caller: AiboardServiceAccount = Depends(verify_aiboard_service_account),
     session: AsyncSession = Depends(get_db_session),
 ) -> AiboardMeetingFinishResponse:
@@ -409,7 +405,6 @@ async def finish_aiboard_meeting(
         session=session,
         meeting=meeting,
         source_text=source_text,
-        background_tasks=background_tasks,
     )
     slack_post = await _post_minutes_to_default_channel(
         session=session,
@@ -476,7 +471,6 @@ async def _generate_and_save_minutes(
     session: AsyncSession,
     meeting: Meeting,
     source_text: str,
-    background_tasks: BackgroundTasks | None = None,
 ) -> MeetingMinutes:
     try:
         body = await run_in_threadpool(generate_minutes_from_text, source_text)
@@ -506,23 +500,13 @@ async def _generate_and_save_minutes(
         minutes.source_text = source_text
         minutes.is_deleted = False
 
-    roadmap_jobs = (
+    if is_minutes_update:
         await mark_minutes_roadmaps_for_regeneration(
             session=session,
             minutes_id=minutes.id,
         )
-        if is_minutes_update
-        else []
-    )
     await session.commit()
     await session.refresh(minutes)
-    if background_tasks is not None:
-        for task_id, generation_token in roadmap_jobs:
-            background_tasks.add_task(
-                generate_task_roadmap_background,
-                task_id,
-                generation_token,
-            )
     return minutes
 
 

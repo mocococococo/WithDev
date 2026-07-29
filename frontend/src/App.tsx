@@ -29,7 +29,7 @@ import {
   Video,
 } from 'lucide-react';
 import type { FormEvent } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createTeamTask,
   createRoadmapStep,
@@ -2545,6 +2545,9 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [isLoadingInvite, setIsLoadingInvite] = useState(initialEntry.route.kind === 'invite');
   const [isAcceptingInvite, setIsAcceptingInvite] = useState(false);
+  const roadmapGenerationRequests = useRef(
+    new globalThis.Map<string, Promise<void>>(),
+  );
   const selectedTeamId = getRouteTeamId(route);
   const selectedMeetingId = route.kind === 'meeting' ? route.meetingId : null;
   const selectedTaskId = route.kind === 'task' ? route.taskId : null;
@@ -2771,6 +2774,33 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     ? tasks.filter((task) => task.team_id === selectedTeam.team_id)
     : [];
 
+  const launchRoadmapGeneration = useCallback(
+    (taskId: string, expectedVersion?: number, reopen = false) => {
+      const currentRequest = roadmapGenerationRequests.current.get(taskId);
+      if (currentRequest) return currentRequest;
+
+      const request = generateTaskRoadmap(
+        currentUser,
+        taskId,
+        reopen,
+        expectedVersion,
+      )
+        .then((nextTask) => {
+          setTasks((currentTasks) =>
+            currentTasks.map((task) =>
+              task.id === nextTask.id ? withRoadmap(nextTask) : task,
+            ),
+          );
+        })
+        .finally(() => {
+          roadmapGenerationRequests.current.delete(taskId);
+        });
+      roadmapGenerationRequests.current.set(taskId, request);
+      return request;
+    },
+    [currentUser],
+  );
+
   useEffect(() => {
     if (!selectedTask) return;
     const isGenerating =
@@ -2779,11 +2809,20 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     if (!isGenerating) return;
 
     let isCancelled = false;
+    void launchRoadmapGeneration(
+      selectedTask.id,
+      selectedTask.roadmap.version,
+    ).catch((err) => {
+      if (!isCancelled) {
+        setTaskError(
+          err instanceof Error ? err.message : 'ロードマップを生成できませんでした。',
+        );
+      }
+    });
+
     const refreshRoadmap = async () => {
       try {
-        const nextTask = selectedTask.roadmap.id.startsWith('pending-')
-          ? await generateTaskRoadmap(currentUser, selectedTask.id)
-          : await fetchTask(currentUser, selectedTask.id);
+        const nextTask = await fetchTask(currentUser, selectedTask.id);
         if (!isCancelled) {
           setTasks((currentTasks) =>
             currentTasks.map((task) =>
@@ -2800,7 +2839,6 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       }
     };
 
-    void refreshRoadmap();
     const intervalId = window.setInterval(() => void refreshRoadmap(), 2000);
     return () => {
       isCancelled = true;
@@ -2808,6 +2846,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     };
   }, [
     currentUser,
+    launchRoadmapGeneration,
     selectedTask?.id,
     selectedTask?.roadmap.generation_status,
     selectedTask?.roadmap.id,
@@ -2877,6 +2916,19 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setTaskError(null);
     const nextTasks = await generateTeamTasks(currentUser, selectedTeam.team_id, minutesId);
     setTasks(withRoadmaps(nextTasks));
+    for (const task of nextTasks) {
+      if (
+        task.roadmap?.generation_status === 'pending' ||
+        task.roadmap?.generation_status === 'generating' ||
+        task.roadmap === null
+      ) {
+        void launchRoadmapGeneration(task.id, task.roadmap?.version).catch((err) => {
+          setTaskError(
+            err instanceof Error ? err.message : 'ロードマップを生成できませんでした。',
+          );
+        });
+      }
+    }
   };
 
   const handleCreateTask = async (input: TaskCreateInput) => {
@@ -2888,6 +2940,14 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       withRoadmap(createdTask),
       ...currentTasks.filter((task) => task.id !== createdTask.id),
     ]);
+    void launchRoadmapGeneration(
+      createdTask.id,
+      createdTask.roadmap?.version,
+    ).catch((err) => {
+      setTaskError(
+        err instanceof Error ? err.message : 'ロードマップを生成できませんでした。',
+      );
+    });
   };
 
   const handleSaveTask = async (taskId: string, input: TaskUpdateInput) => {
@@ -2896,6 +2956,20 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setTasks((currentTasks) =>
       currentTasks.map((task) => (task.id === taskId ? withRoadmap(updatedTask) : task)),
     );
+    if (
+      updatedTask.status !== 'done' &&
+      (updatedTask.roadmap?.generation_status === 'pending' ||
+        updatedTask.roadmap?.generation_status === 'generating')
+    ) {
+      void launchRoadmapGeneration(
+        updatedTask.id,
+        updatedTask.roadmap.version,
+      ).catch((err) => {
+        setTaskError(
+          err instanceof Error ? err.message : 'ロードマップを再生成できませんでした。',
+        );
+      });
+    }
   };
 
   const replaceTask = (nextTask: TeamTaskSummary) => {
@@ -2910,14 +2984,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     tasks.find((task) => task.id === taskId)?.roadmap.version;
 
   const handleGenerateRoadmap = async (taskId: string, reopen = false) => {
-    replaceTask(
-      await generateTaskRoadmap(
-        currentUser,
-        taskId,
-        reopen,
-        roadmapVersion(taskId),
-      ),
-    );
+    await launchRoadmapGeneration(taskId, roadmapVersion(taskId), reopen);
   };
 
   const handleCreateRoadmapStep = async (
