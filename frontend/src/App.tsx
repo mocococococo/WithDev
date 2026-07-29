@@ -72,6 +72,7 @@ const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
 
 type MeetingFilter = 'all' | MeetingStatus;
 type TaskFilter = 'all' | TaskStatus;
+type TaskOwnershipFilter = 'all' | 'mine';
 type TeamView = 'meetings' | 'tasks';
 type SlackNotice = {
   type: 'success' | 'error';
@@ -118,6 +119,11 @@ const taskFilterLabels: Record<TaskFilter, string> = {
   todo: '未着手',
   in_progress: '進行中',
   done: '完了',
+};
+
+const taskOwnershipFilterLabels: Record<TaskOwnershipFilter, string> = {
+  all: '全員のタスク',
+  mine: '自分のタスク',
 };
 
 function shortSha(value: string) {
@@ -1038,6 +1044,7 @@ type TeamTaskScreenProps = {
   user: User;
   team: UserTeamSummary;
   tasks: TeamTask[];
+  currentUserId: string | null;
   isLoading: boolean;
   error: string | null;
   onBackToMeetings: () => void;
@@ -1049,16 +1056,25 @@ function TeamTaskScreen({
   user,
   team,
   tasks,
+  currentUserId,
   isLoading,
   error,
   onBackToMeetings,
   onOpenTask,
   onLogout,
 }: TeamTaskScreenProps) {
-  const [filter, setFilter] = useState<TaskFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<TaskFilter>('all');
+  const [ownershipFilter, setOwnershipFilter] = useState<TaskOwnershipFilter>('all');
   const visibleTasks = useMemo(() => {
-    return sortTasks(tasks.filter((task) => filter === 'all' || task.status === filter));
-  }, [filter, tasks]);
+    return sortTasks(
+      tasks.filter((task) => {
+        const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
+        const matchesOwnership =
+          ownershipFilter === 'all' || task.assignee_user_id === currentUserId;
+        return matchesStatus && matchesOwnership;
+      }),
+    );
+  }, [currentUserId, ownershipFilter, statusFilter, tasks]);
 
   return (
     <main className="app-layout">
@@ -1078,21 +1094,44 @@ function TeamTaskScreen({
       <section className="toolbar">
         <div>
           <h2>チーム全体のタスク</h2>
-          <p>{tasks.length} 件のタスクがあります。</p>
+          <p>
+            {visibleTasks.length} 件を表示 / 全 {tasks.length} 件
+          </p>
         </div>
       </section>
 
-      <section className="filter-bar" aria-label="タスクの絞り込み">
-        {(Object.keys(taskFilterLabels) as TaskFilter[]).map((key) => (
-          <button
-            key={key}
-            className={filter === key ? 'filter-button active' : 'filter-button'}
-            type="button"
-            onClick={() => setFilter(key)}
-          >
-            {taskFilterLabels[key]}
-          </button>
-        ))}
+      <section className="task-filter-groups" aria-label="タスクの絞り込み">
+        <div className="task-filter-group">
+          <span>担当</span>
+          <div className="filter-bar" role="group" aria-label="担当者で絞り込み">
+            {(Object.keys(taskOwnershipFilterLabels) as TaskOwnershipFilter[]).map((key) => (
+              <button
+                key={key}
+                className={ownershipFilter === key ? 'filter-button active' : 'filter-button'}
+                type="button"
+                onClick={() => setOwnershipFilter(key)}
+                disabled={key === 'mine' && !currentUserId}
+              >
+                {taskOwnershipFilterLabels[key]}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="task-filter-group">
+          <span>状態</span>
+          <div className="filter-bar" role="group" aria-label="ステータスで絞り込み">
+            {(Object.keys(taskFilterLabels) as TaskFilter[]).map((key) => (
+              <button
+                key={key}
+                className={statusFilter === key ? 'filter-button active' : 'filter-button'}
+                type="button"
+                onClick={() => setStatusFilter(key)}
+              >
+                {taskFilterLabels[key]}
+              </button>
+            ))}
+          </div>
+        </div>
       </section>
 
       {error && <p className="error-text">{error}</p>}
@@ -2202,6 +2241,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         user={currentUser}
         team={selectedTeam}
         tasks={teamTasks}
+        currentUserId={currentUserId}
         isLoading={isLoadingTasks}
         error={taskError}
         onBackToMeetings={() => setSelectedTeamView('meetings')}

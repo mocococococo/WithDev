@@ -457,6 +457,30 @@ h2 {
   margin-bottom: 16px;
 }
 
+.task-filter-groups {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.task-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.task-filter-group > span {
+  width: 3em;
+  flex: 0 0 auto;
+  color: #667085;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.task-filter-group .filter-bar {
+  margin-bottom: 0;
+}
+
 .filter-button {
   min-height: 38px;
   font-size: 0.92rem;
@@ -1336,6 +1360,12 @@ h2 {
 
   .form-actions {
     flex-direction: column-reverse;
+  }
+
+  .task-filter-group {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
   }
 
   .form-actions .primary-button,
