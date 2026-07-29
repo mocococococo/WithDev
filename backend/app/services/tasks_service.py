@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,10 @@ def generate_task_actions_from_minutes(
 def _load_prompt() -> str:
     prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "tasks_prompt.txt"
     return prompt_path.read_text(encoding="utf-8")
+
+
+def get_task_generation_prompt_version() -> str:
+    return hashlib.sha256(_load_prompt().encode("utf-8")).hexdigest()
 
 
 def _parse_actions(value: str) -> list[dict[str, Any]]:

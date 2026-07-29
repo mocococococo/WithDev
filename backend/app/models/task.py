@@ -1,7 +1,16 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, Text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -70,3 +79,31 @@ class TaskMinutesImpact(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     task = relationship("Task", back_populates="minutes_impacts")
     minutes = relationship("MeetingMinutes", back_populates="task_impacts")
 
+
+class TaskGenerationRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "task_generation_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "minutes_id",
+            "input_hash",
+            "prompt_version",
+            name="task_generation_run_input",
+        ),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("teams.id"),
+        nullable=False,
+        index=True,
+    )
+    minutes_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("minutes.id"),
+        nullable=False,
+        index=True,
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -6,10 +6,11 @@ from uuid import uuid4
 
 from app.api.tasks import (
     TaskGenerateRequest,
+    _validate_generated_task_action,
     generate_team_tasks,
     list_minutes_tasks,
 )
-from app.models.task import Task, TaskMinutesImpact
+from app.models.task import Task, TaskGenerationRun, TaskMinutesImpact
 
 
 def make_task(*, team_id, source_minutes_id=None) -> Task:
@@ -32,6 +33,48 @@ def make_task(*, team_id, source_minutes_id=None) -> Task:
 
 
 class TaskMinutesImpactGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_returns_existing_tasks_without_regenerating_same_input(self) -> None:
+        team_id = uuid4()
+        minutes_id = uuid4()
+        task = make_task(team_id=team_id, source_minutes_id=minutes_id)
+        session = MagicMock()
+        run_in_threadpool = AsyncMock()
+
+        with (
+            patch("app.api.tasks.require_team_member", new_callable=AsyncMock),
+            patch(
+                "app.api.tasks._get_accessible_minutes",
+                new_callable=AsyncMock,
+                return_value=(
+                    SimpleNamespace(id=minutes_id, body="議事録"),
+                    SimpleNamespace(aiboard_payload={}),
+                ),
+            ),
+            patch(
+                "app.api.tasks._get_successful_task_generation_run",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(),
+            ),
+            patch(
+                "app.api.tasks._get_team_tasks",
+                new_callable=AsyncMock,
+                return_value=[task],
+            ),
+            patch("app.api.tasks.run_in_threadpool", run_in_threadpool),
+        ):
+            response = await generate_team_tasks(
+                team_id=team_id,
+                request=TaskGenerateRequest(minutes_id=minutes_id),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        self.assertEqual(response.created_count, 0)
+        self.assertEqual(response.updated_count, 0)
+        self.assertEqual(len(response.tasks), 1)
+        run_in_threadpool.assert_not_awaited()
+        session.commit.assert_not_called()
+
     async def test_ignores_ai_delete_action(self) -> None:
         team_id = uuid4()
         minutes_id = uuid4()
@@ -41,6 +84,11 @@ class TaskMinutesImpactGenerationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("app.api.tasks.require_team_member", new_callable=AsyncMock),
+            patch(
+                "app.api.tasks._get_successful_task_generation_run",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch(
                 "app.api.tasks._get_accessible_minutes",
                 new_callable=AsyncMock,
@@ -86,6 +134,11 @@ class TaskMinutesImpactGenerationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("app.api.tasks.require_team_member", new_callable=AsyncMock),
+            patch(
+                "app.api.tasks._get_successful_task_generation_run",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch(
                 "app.api.tasks._get_accessible_minutes",
                 new_callable=AsyncMock,
@@ -144,6 +197,11 @@ class TaskMinutesImpactGenerationTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.api.tasks.require_team_member", new_callable=AsyncMock),
             patch(
+                "app.api.tasks._get_successful_task_generation_run",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
                 "app.api.tasks._get_accessible_minutes",
                 new_callable=AsyncMock,
                 return_value=(
@@ -185,8 +243,14 @@ class TaskMinutesImpactGenerationTests(unittest.IsolatedAsyncioTestCase):
             for call in session.add.call_args_list
             if isinstance(call.args[0], TaskMinutesImpact)
         ]
+        generation_runs = [
+            call.args[0]
+            for call in session.add.call_args_list
+            if isinstance(call.args[0], TaskGenerationRun)
+        ]
         self.assertEqual(response.updated_count, 1)
         self.assertEqual(len(impacts), 1)
+        self.assertEqual(len(generation_runs), 1)
         self.assertEqual(impacts[0].task_id, task.id)
         self.assertEqual(impacts[0].minutes_id, minutes_id)
         self.assertEqual(impacts[0].action, "updated")
@@ -200,6 +264,11 @@ class TaskMinutesImpactGenerationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("app.api.tasks.require_team_member", new_callable=AsyncMock),
+            patch(
+                "app.api.tasks._get_successful_task_generation_run",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch(
                 "app.api.tasks._get_accessible_minutes",
                 new_callable=AsyncMock,
@@ -252,6 +321,89 @@ class TaskMinutesImpactGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(impacts[0].task, created_tasks[0])
         self.assertEqual(impacts[0].minutes_id, minutes_id)
         self.assertEqual(impacts[0].action, "created")
+
+
+class GeneratedTaskActionValidationTests(unittest.TestCase):
+    def test_rejects_status_regression(self) -> None:
+        task = make_task(team_id=uuid4())
+        task.status = "in_progress"
+
+        validated = _validate_generated_task_action(
+            action={
+                "action": "update",
+                "task_id": str(task.id),
+                "status": "todo",
+            },
+            existing_task_map={task.id: task},
+            member_map={},
+        )
+
+        self.assertIsNone(validated)
+        self.assertEqual(task.status, "in_progress")
+
+    def test_allows_forward_status_transition(self) -> None:
+        task = make_task(team_id=uuid4())
+
+        validated = _validate_generated_task_action(
+            action={
+                "action": "update",
+                "task_id": str(task.id),
+                "status": "done",
+            },
+            existing_task_map={task.id: task},
+            member_map={},
+        )
+
+        self.assertEqual(validated["status"], "done")
+
+    def test_rejects_entire_update_when_due_at_is_invalid(self) -> None:
+        task = make_task(team_id=uuid4())
+
+        validated = _validate_generated_task_action(
+            action={
+                "action": "update",
+                "task_id": str(task.id),
+                "title": "変更されるべきではない",
+                "due_at": "not-a-date",
+            },
+            existing_task_map={task.id: task},
+            member_map={},
+        )
+
+        self.assertIsNone(validated)
+        self.assertEqual(task.title, "確認する")
+
+    def test_rejects_create_with_invalid_status(self) -> None:
+        validated = _validate_generated_task_action(
+            action={
+                "action": "create",
+                "title": "新しいタスク",
+                "body": "本文",
+                "status": "invalid",
+            },
+            existing_task_map={},
+            member_map={},
+        )
+
+        self.assertIsNone(validated)
+
+    def test_rejects_entire_update_when_assignee_is_not_team_member(self) -> None:
+        task = make_task(team_id=uuid4())
+
+        validated = _validate_generated_task_action(
+            action={
+                "action": "update",
+                "task_id": str(task.id),
+                "title": "変更されるべきではない",
+                "assignee_user_id": str(uuid4()),
+                "assignee_name": "チーム外",
+            },
+            existing_task_map={task.id: task},
+            member_map={},
+        )
+
+        self.assertIsNone(validated)
+        self.assertEqual(task.title, "確認する")
 
 
 class ListMinutesTasksTests(unittest.IsolatedAsyncioTestCase):

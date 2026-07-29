@@ -1,9 +1,12 @@
+import hashlib
+import json
 from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -11,7 +14,7 @@ from app.core.auth import AuthenticatedUser, verify_firebase_user
 from app.db.session import get_db_session
 from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
-from app.models.task import Task, TaskMinutesImpact
+from app.models.task import Task, TaskGenerationRun, TaskMinutesImpact
 from app.models.team import TeamMember
 from app.models.user import User
 from app.services.notion_repository import (
@@ -23,12 +26,23 @@ from app.services.notion_service import NotionApiError, sync_task_page
 from app.services.tasks_service import (
     TaskGenerationError,
     generate_task_actions_from_minutes,
+    get_task_generation_prompt_version,
 )
 from app.services.team_access_service import require_team_member
 
 
 router = APIRouter()
 VALID_TASK_STATUSES = {"todo", "in_progress", "done"}
+TASK_STATUS_ORDER = {"todo": 0, "in_progress": 1, "done": 2}
+GENERATED_TASK_FIELDS = {
+    "action",
+    "title",
+    "body",
+    "assignee_user_id",
+    "assignee_name",
+    "status",
+    "due_at",
+}
 
 
 class TaskBody(BaseModel):
@@ -235,6 +249,28 @@ async def generate_team_tasks(
         team_id=team_id,
         minutes_id=request.minutes_id,
     )
+    conversation_logs = _conversation_logs_from_meeting(meeting)
+    input_hash = _task_generation_input_hash(
+        conversation_logs=conversation_logs,
+        minutes_body=minutes.body,
+    )
+    prompt_version = get_task_generation_prompt_version()
+    previous_run = await _get_successful_task_generation_run(
+        session=session,
+        team_id=team_id,
+        minutes_id=minutes.id,
+        input_hash=input_hash,
+        prompt_version=prompt_version,
+    )
+    if previous_run is not None:
+        tasks = await _get_team_tasks(session=session, team_id=team_id)
+        return TaskGenerateResponse(
+            tasks=[_task_body(task) for task in tasks],
+            created_count=0,
+            updated_count=0,
+            deleted_count=0,
+        )
+
     members = await _get_active_team_members(session=session, team_id=team_id)
     member_map = {user.id: user for user, _role in members}
     existing_tasks = await _get_team_tasks(session=session, team_id=team_id)
@@ -242,7 +278,7 @@ async def generate_team_tasks(
     try:
         actions = await run_in_threadpool(
             generate_task_actions_from_minutes,
-            conversation_logs=_conversation_logs_from_meeting(meeting),
+            conversation_logs=conversation_logs,
             minutes_body=minutes.body,
             existing_tasks=[_task_prompt_body(task) for task in existing_tasks],
             team_members=[_member_prompt_body(user, role) for user, role in members],
@@ -258,7 +294,15 @@ async def generate_team_tasks(
     updated_count = 0
     deleted_count = 0
 
-    for action in actions:
+    for raw_action in actions:
+        action = _validate_generated_task_action(
+            action=raw_action,
+            existing_task_map=existing_task_map,
+            member_map=member_map,
+        )
+        if action is None:
+            continue
+
         action_name = str(action.get("action") or "").strip().lower()
         if action_name == "create":
             task = _create_task_from_action(
@@ -284,7 +328,7 @@ async def generate_team_tasks(
                 task=task,
                 action=action,
                 member_map=member_map,
-                strict_assignee=False,
+                strict_assignee=True,
             ):
                 session.add(
                     TaskMinutesImpact(
@@ -294,7 +338,32 @@ async def generate_team_tasks(
                     )
                 )
                 updated_count += 1
-    await session.commit()
+
+    session.add(
+        TaskGenerationRun(
+            team_id=team_id,
+            minutes_id=minutes.id,
+            input_hash=input_hash,
+            prompt_version=prompt_version,
+            created_count=created_count,
+            updated_count=updated_count,
+        )
+    )
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        concurrent_run = await _get_successful_task_generation_run(
+            session=session,
+            team_id=team_id,
+            minutes_id=minutes.id,
+            input_hash=input_hash,
+            prompt_version=prompt_version,
+        )
+        if concurrent_run is None:
+            raise
+        created_count = 0
+        updated_count = 0
 
     tasks = await _get_team_tasks(session=session, team_id=team_id)
     return TaskGenerateResponse(
@@ -470,6 +539,134 @@ async def _get_accessible_minutes(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="minutes not found")
     return row[0], row[1]
+
+
+def _task_generation_input_hash(*, conversation_logs: str, minutes_body: str) -> str:
+    payload = json.dumps(
+        {
+            "conversation_logs": conversation_logs,
+            "minutes_body": minutes_body,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def _get_successful_task_generation_run(
+    *,
+    session: AsyncSession,
+    team_id: UUID,
+    minutes_id: UUID,
+    input_hash: str,
+    prompt_version: str,
+) -> TaskGenerationRun | None:
+    result = await session.execute(
+        select(TaskGenerationRun).where(
+            TaskGenerationRun.team_id == team_id,
+            TaskGenerationRun.minutes_id == minutes_id,
+            TaskGenerationRun.input_hash == input_hash,
+            TaskGenerationRun.prompt_version == prompt_version,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _validate_generated_task_action(
+    *,
+    action: object,
+    existing_task_map: dict[UUID, Task],
+    member_map: dict[UUID, User],
+) -> dict | None:
+    if not isinstance(action, dict):
+        return None
+
+    action_name = str(action.get("action") or "").strip().lower()
+    if action_name == "create":
+        allowed_fields = GENERATED_TASK_FIELDS
+        required_fields = {"title", "body", "status"}
+        task = None
+    elif action_name == "update":
+        allowed_fields = GENERATED_TASK_FIELDS | {"task_id"}
+        required_fields = {"task_id"}
+        task = _find_action_task(action=action, existing_task_map=existing_task_map)
+        if task is None or task.status == "done":
+            return None
+    else:
+        return None
+
+    if set(action) - allowed_fields or not required_fields.issubset(action):
+        return None
+
+    update_fields = GENERATED_TASK_FIELDS - {"action"}
+    if action_name == "update" and not any(field in action for field in update_fields):
+        return None
+
+    validated: dict[str, object] = {"action": action_name}
+    if task is not None:
+        validated["task_id"] = task.id
+
+    for field in ("title", "body"):
+        if field not in action:
+            continue
+        value = action[field]
+        if not isinstance(value, str) or not value.strip():
+            return None
+        if field == "title" and len(value.strip()) > 255:
+            return None
+        validated[field] = value.strip()
+
+    if "status" in action:
+        status_value = action["status"]
+        if not isinstance(status_value, str) or status_value not in VALID_TASK_STATUSES:
+            return None
+        if (
+            task is not None
+            and TASK_STATUS_ORDER[status_value] < TASK_STATUS_ORDER[task.status]
+        ):
+            return None
+        validated["status"] = status_value
+
+    if "due_at" in action:
+        due_at_is_valid, due_at = _parse_strict_generated_due_at(action["due_at"])
+        if not due_at_is_valid:
+            return None
+        validated["due_at"] = due_at
+
+    if "assignee_name" in action and action["assignee_name"] is not None:
+        assignee_name = action["assignee_name"]
+        if not isinstance(assignee_name, str) or not assignee_name.strip():
+            return None
+        if len(assignee_name.strip()) > 255:
+            return None
+
+    if "assignee_user_id" in action:
+        assignee_value = action["assignee_user_id"]
+        if assignee_value is None:
+            if action.get("assignee_name") is not None:
+                return None
+            validated["assignee_user_id"] = None
+            validated["assignee_name"] = None
+        else:
+            assignee_user_id = _parse_uuid(assignee_value)
+            if assignee_user_id is None or assignee_user_id not in member_map:
+                return None
+            validated["assignee_user_id"] = assignee_user_id
+            validated["assignee_name"] = member_map[assignee_user_id].display_name
+    elif "assignee_name" in action:
+        return None
+
+    return validated
+
+
+def _parse_strict_generated_due_at(value: object) -> tuple[bool, datetime | None]:
+    if value is None:
+        return True, None
+    if not isinstance(value, str) or not value.strip():
+        return False, None
+    parsed = _parse_generated_due_at(value)
+    return parsed is not None, parsed
 
 
 
