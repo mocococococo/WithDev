@@ -32,6 +32,49 @@ def make_task(*, team_id, source_minutes_id=None) -> Task:
 
 
 class TaskMinutesImpactGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ignores_ai_delete_action(self) -> None:
+        team_id = uuid4()
+        minutes_id = uuid4()
+        task = make_task(team_id=team_id, source_minutes_id=uuid4())
+        session = MagicMock()
+        session.commit = AsyncMock()
+
+        with (
+            patch("app.api.tasks.require_team_member", new_callable=AsyncMock),
+            patch(
+                "app.api.tasks._get_accessible_minutes",
+                new_callable=AsyncMock,
+                return_value=(
+                    SimpleNamespace(id=minutes_id, body="議事録"),
+                    SimpleNamespace(aiboard_payload={}),
+                ),
+            ),
+            patch(
+                "app.api.tasks._get_active_team_members",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "app.api.tasks._get_team_tasks",
+                new_callable=AsyncMock,
+                side_effect=[[task], [task]],
+            ),
+            patch(
+                "app.api.tasks.run_in_threadpool",
+                new_callable=AsyncMock,
+                return_value=[{"action": "delete", "task_id": str(task.id)}],
+            ),
+        ):
+            response = await generate_team_tasks(
+                team_id=team_id,
+                request=TaskGenerateRequest(minutes_id=minutes_id),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        self.assertEqual(response.deleted_count, 0)
+        self.assertFalse(task.is_deleted)
+
     async def test_does_not_update_completed_task(self) -> None:
         team_id = uuid4()
         minutes_id = uuid4()

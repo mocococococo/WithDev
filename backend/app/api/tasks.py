@@ -294,13 +294,6 @@ async def generate_team_tasks(
                     )
                 )
                 updated_count += 1
-        elif action_name == "delete":
-            task = _find_action_task(action=action, existing_task_map=existing_task_map)
-            if task is None:
-                continue
-            task.is_deleted = True
-            deleted_count += 1
-
     await session.commit()
 
     tasks = await _get_team_tasks(session=session, team_id=team_id)
