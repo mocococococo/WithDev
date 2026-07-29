@@ -151,5 +151,8 @@ function toSlackError(detail: string, status: number) {
   if (detail === 'failed to post minutes to slack') {
     return 'Slackへの投稿に失敗しました。';
   }
+  if (detail === 'slack reconnect required') {
+    return 'Markdownファイルの送信権限が必要です。Slackを再連携してください。';
+  }
   return 'Slack連携の処理に失敗しました。時間をおいて再試行してください。';
 }

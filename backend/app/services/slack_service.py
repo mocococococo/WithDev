@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -6,10 +7,20 @@ import httpx
 SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
 SLACK_OAUTH_ACCESS_URL = "https://slack.com/api/oauth.v2.access"
 SLACK_CONVERSATIONS_LIST_URL = "https://slack.com/api/conversations.list"
+SLACK_CONVERSATIONS_JOIN_URL = "https://slack.com/api/conversations.join"
 SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
+SLACK_GET_UPLOAD_URL_EXTERNAL_URL = "https://slack.com/api/files.getUploadURLExternal"
+SLACK_COMPLETE_UPLOAD_EXTERNAL_URL = "https://slack.com/api/files.completeUploadExternal"
 
-SLACK_BOT_SCOPES = ("chat:write", "channels:read", "chat:write.public")
+SLACK_BOT_SCOPES = (
+    "chat:write",
+    "channels:read",
+    "channels:join",
+    "chat:write.public",
+    "files:write",
+)
 SLACK_MESSAGE_LIMIT = 39000
+MARKDOWN_FILENAME_MAX_STEM_LENGTH = 120
 
 
 class SlackApiError(Exception):
@@ -35,6 +46,12 @@ class SlackChannel:
 class SlackPostResult:
     channel_id: str
     slack_ts: str
+
+
+@dataclass(frozen=True)
+class SlackFileUploadResult:
+    channel_id: str
+    file_id: str
 
 
 async def exchange_oauth_code(
@@ -150,9 +167,90 @@ async def post_message(
     )
 
 
+async def upload_markdown_file(
+    *,
+    bot_access_token: str,
+    channel_id: str,
+    filename: str,
+    title: str,
+    content: str,
+) -> SlackFileUploadResult:
+    file_bytes = content.encode("utf-8")
+    authorization_headers = {"Authorization": f"Bearer {bot_access_token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        join_response = await client.post(
+            SLACK_CONVERSATIONS_JOIN_URL,
+            json={"channel": channel_id},
+            headers=authorization_headers,
+        )
+        _parse_slack_payload(join_response)
+
+        upload_url_response = await client.post(
+            SLACK_GET_UPLOAD_URL_EXTERNAL_URL,
+            data={
+                "filename": filename,
+                "length": len(file_bytes),
+            },
+            headers=authorization_headers,
+        )
+        upload_url_payload = _parse_slack_payload(upload_url_response)
+        upload_url = upload_url_payload.get("upload_url")
+        file_id = upload_url_payload.get("file_id")
+        if not isinstance(upload_url, str) or not upload_url:
+            raise SlackApiError("slack upload url response is missing upload_url")
+        if not isinstance(file_id, str) or not file_id:
+            raise SlackApiError("slack upload url response is missing file_id")
+
+        file_response = await client.post(
+            upload_url,
+            content=file_bytes,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        if not file_response.is_success:
+            raise SlackApiError(f"slack file upload failed: {file_response.status_code}")
+
+        complete_response = await client.post(
+            SLACK_COMPLETE_UPLOAD_EXTERNAL_URL,
+            json={
+                "files": [{"id": file_id, "title": title}],
+                "channel_id": channel_id,
+            },
+            headers=authorization_headers,
+        )
+        complete_payload = _parse_slack_payload(complete_response)
+
+    files = complete_payload.get("files")
+    if not isinstance(files, list) or not any(
+        isinstance(file, dict) and file.get("id") == file_id for file in files
+    ):
+        raise SlackApiError("slack complete upload response is missing file")
+
+    return SlackFileUploadResult(channel_id=channel_id, file_id=file_id)
+
+
 def build_minutes_message(*, title: str | None, body: str) -> str:
     minutes_title = title or "議事録"
     return f"*{minutes_title}*\n{body}"
+
+
+def build_minutes_markdown(*, title: str | None, body: str) -> str:
+    minutes_title = _normalize_minutes_title(title)
+    return f"# {minutes_title}\n\n{body.strip()}\n"
+
+
+def build_minutes_markdown_filename(*, title: str | None) -> str:
+    minutes_title = _normalize_minutes_title(title)
+    if minutes_title.lower().endswith(".md"):
+        minutes_title = minutes_title[:-3]
+    safe_stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", minutes_title)
+    safe_stem = safe_stem.strip(" .")[:MARKDOWN_FILENAME_MAX_STEM_LENGTH].rstrip(" .")
+    return f"{safe_stem or '議事録'}.md"
+
+
+def _normalize_minutes_title(title: str | None) -> str:
+    normalized_title = " ".join((title or "").split())
+    return normalized_title or "議事録"
 
 
 def _parse_slack_payload(response: httpx.Response) -> dict:

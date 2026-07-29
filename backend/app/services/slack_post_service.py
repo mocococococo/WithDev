@@ -7,9 +7,10 @@ from app.models.minutes import MeetingMinutes
 from app.models.slack import SlackConnection, SlackPostLog
 from app.services.slack_service import (
     SlackApiError,
-    build_minutes_message,
+    build_minutes_markdown,
+    build_minutes_markdown_filename,
     list_public_channels,
-    post_message,
+    upload_markdown_file,
 )
 
 
@@ -64,6 +65,7 @@ async def create_slack_post_for_minutes(
     team_id: UUID,
     minutes: MeetingMinutes,
     channel_id: str,
+    document_title: str | None = None,
 ) -> SlackPostLog:
     connection = await get_active_slack_connection(session=session, team_id=team_id)
     channel_name = await get_slack_channel_name(
@@ -72,10 +74,13 @@ async def create_slack_post_for_minutes(
     )
 
     try:
-        post_result = await post_message(
+        normalized_title = (document_title or minutes.title or "").strip() or "議事録"
+        upload_result = await upload_markdown_file(
             bot_access_token=connection.bot_access_token,
             channel_id=channel_id,
-            text=build_minutes_message(title=minutes.title, body=minutes.body),
+            filename=build_minutes_markdown_filename(title=normalized_title),
+            title=normalized_title,
+            content=build_minutes_markdown(title=normalized_title, body=minutes.body),
         )
     except SlackApiError as exc:
         failed_log = SlackPostLog(
@@ -90,14 +95,19 @@ async def create_slack_post_for_minutes(
         )
         session.add(failed_log)
         await session.commit()
-        raise SlackPostError("failed to post minutes to slack") from exc
+        error_message = (
+            "slack reconnect required"
+            if str(exc) == "missing_scope"
+            else "failed to post minutes to slack"
+        )
+        raise SlackPostError(error_message) from exc
 
     post_log = SlackPostLog(
         minutes_id=minutes.id,
         slack_connection_id=connection.id,
-        channel_id=post_result.channel_id,
+        channel_id=upload_result.channel_id,
         channel_name=channel_name,
-        slack_ts=post_result.slack_ts,
+        slack_ts=None,
         status="success",
         error_message=None,
         is_deleted=False,

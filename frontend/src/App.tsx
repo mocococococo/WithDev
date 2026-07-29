@@ -1555,7 +1555,7 @@ function SlackPostPanel({ user, team, meeting }: SlackPostPanelProps) {
       const post = await postMinutesToSlack(user, minutesId, selectedChannelId);
       const channelName =
         post.channel_name || channels.find((channel) => channel.id === selectedChannelId)?.name;
-      setSuccess(`${channelName ? `#${channelName}` : 'Slack'} に投稿しました。`);
+      setSuccess(`${channelName ? `#${channelName}` : 'Slack'} にMarkdownファイルを送信しました。`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Slackへの投稿に失敗しました。');
     } finally {
@@ -1571,7 +1571,7 @@ function SlackPostPanel({ user, team, meeting }: SlackPostPanelProps) {
         </span>
         <div>
           <p className="eyebrow">Slack</p>
-          <h2>Slackへ投稿</h2>
+          <h2>Slackへ送信</h2>
         </div>
       </div>
 
@@ -1607,7 +1607,7 @@ function SlackPostPanel({ user, team, meeting }: SlackPostPanelProps) {
               disabled={!selectedChannelId || isPosting}
             >
               {isPosting ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-              {isPosting ? '投稿中' : '投稿'}
+              {isPosting ? '送信中' : 'Markdownを送信'}
             </button>
           </div>
         </div>

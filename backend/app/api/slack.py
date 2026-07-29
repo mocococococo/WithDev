@@ -293,6 +293,7 @@ async def post_minutes_to_slack(
             team_id=meeting.team_id,
             minutes=minutes,
             channel_id=channel_id,
+            document_title=meeting.title,
         )
     except SlackConnectionNotFoundError as exc:
         raise HTTPException(
@@ -301,8 +302,12 @@ async def post_minutes_to_slack(
         ) from exc
     except SlackPostError as exc:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed to post minutes to slack",
+            status_code=(
+                status.HTTP_409_CONFLICT
+                if str(exc) == "slack reconnect required"
+                else status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=str(exc),
         ) from exc
 
     return SlackPostResponse(slack_post=_slack_post_body(post_log))
