@@ -1,20 +1,27 @@
 import hashlib
 import json
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AuthenticatedUser, verify_firebase_user
-from app.db.session import get_db_session
+from app.db.session import AsyncSessionLocal, get_db_session
 from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
-from app.models.task import Task, TaskGenerationRun, TaskMinutesImpact
+from app.models.task import (
+    Task,
+    TaskGenerationRun,
+    TaskMinutesImpact,
+    TaskRoadmap,
+    TaskRoadmapStep,
+)
 from app.models.team import TeamMember
 from app.models.user import User
 from app.services.notion_repository import (
@@ -27,6 +34,12 @@ from app.services.tasks_service import (
     TaskGenerationError,
     generate_task_actions_from_minutes,
     get_task_generation_prompt_version,
+)
+from app.services.task_roadmap_service import (
+    TaskRoadmapGenerationError,
+    generate_task_roadmap,
+    get_task_roadmap_prompt_version,
+    task_roadmap_input_hash,
 )
 from app.services.team_access_service import require_team_member
 
@@ -45,6 +58,26 @@ GENERATED_TASK_FIELDS = {
 }
 
 
+class RoadmapStepBody(BaseModel):
+    id: UUID
+    title: str
+    description: str
+    status: str
+    position: int
+    source: str
+    user_edited: bool
+
+
+class TaskRoadmapBody(BaseModel):
+    id: UUID
+    overview: str
+    generation_status: str
+    generation_error: str | None
+    version: int
+    has_source_updates: bool
+    steps: list[RoadmapStepBody]
+
+
 class TaskBody(BaseModel):
     id: UUID
     team_id: UUID
@@ -57,6 +90,7 @@ class TaskBody(BaseModel):
     due_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    roadmap: TaskRoadmapBody | None = None
 
 
 class TaskListResponse(BaseModel):
@@ -93,6 +127,30 @@ class TaskUpdateRequest(BaseModel):
     assignee_name: str | None = None
     status: str | None = None
     due_at: datetime | None = None
+
+
+class RoadmapGenerateRequest(BaseModel):
+    reopen: bool = False
+    expected_version: int | None = None
+
+
+class RoadmapStepCreateRequest(BaseModel):
+    title: str
+    description: str
+    expected_version: int | None = None
+
+
+class RoadmapStepUpdateRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
+    reopen_task: bool = False
+    expected_version: int | None = None
+
+
+class RoadmapStepReorderRequest(BaseModel):
+    step_ids: list[UUID]
+    expected_version: int | None = None
 
 
 class NotionSyncBody(BaseModel):
@@ -189,11 +247,6 @@ async def list_minutes_tasks(
     return TaskListResponse(tasks=[_task_body(task) for task in result.scalars().all()])
 
 
-@router.post(
-    "/teams/{team_id}/tasks",
-    response_model=TaskResponse,
-    status_code=status.HTTP_201_CREATED,
-)
 async def create_team_task(
     team_id: UUID,
     request: TaskCreateRequest,
@@ -229,13 +282,40 @@ async def create_team_task(
         due_at=request.due_at,
         is_deleted=False,
     )
+    task.roadmap = TaskRoadmap(
+        overview="",
+        generation_status="pending",
+        version=1,
+        has_source_updates=False,
+    )
     session.add(task)
     await session.commit()
     await session.refresh(task)
     return TaskResponse(task=_task_body(task))
 
 
-@router.post("/teams/{team_id}/tasks/generate", response_model=TaskGenerateResponse)
+@router.post(
+    "/teams/{team_id}/tasks",
+    response_model=TaskResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_team_task_endpoint(
+    team_id: UUID,
+    request: TaskCreateRequest,
+    background_tasks: BackgroundTasks,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskResponse:
+    response = await create_team_task(
+        team_id=team_id,
+        request=request,
+        auth_user=auth_user,
+        session=session,
+    )
+    background_tasks.add_task(generate_task_roadmap_background, response.task.id)
+    return response
+
+
 async def generate_team_tasks(
     team_id: UUID,
     request: TaskGenerateRequest,
@@ -330,6 +410,7 @@ async def generate_team_tasks(
                 member_map=member_map,
                 strict_assignee=True,
             ):
+                _mark_roadmap_pending(_ensure_roadmap(task))
                 session.add(
                     TaskMinutesImpact(
                         task_id=task.id,
@@ -374,6 +455,26 @@ async def generate_team_tasks(
     )
 
 
+@router.post("/teams/{team_id}/tasks/generate", response_model=TaskGenerateResponse)
+async def generate_team_tasks_endpoint(
+    team_id: UUID,
+    request: TaskGenerateRequest,
+    background_tasks: BackgroundTasks,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskGenerateResponse:
+    response = await generate_team_tasks(
+        team_id=team_id,
+        request=request,
+        auth_user=auth_user,
+        session=session,
+    )
+    for task in response.tasks:
+        if task.roadmap is None or task.roadmap.generation_status in {"pending", "failed"}:
+            background_tasks.add_task(generate_task_roadmap_background, task.id)
+    return response
+
+
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
 async def get_task(
     task_id: UUID,
@@ -384,7 +485,6 @@ async def get_task(
     return TaskResponse(task=_task_body(task))
 
 
-@router.patch("/tasks/{task_id}", response_model=TaskResponse)
 async def update_task(
     task_id: UUID,
     request: TaskUpdateRequest,
@@ -399,8 +499,223 @@ async def update_task(
         payload = request.model_dump(exclude_unset=True)
     else:
         payload = request.dict(exclude_unset=True)
+    previous_status = task.status
+    source_changed = any(field in payload for field in ("title", "body"))
     _apply_task_patch(task=task, payload=payload, member_map=member_map)
 
+    roadmap = _ensure_roadmap(task)
+    if task.status == "done":
+        _complete_all_roadmap_steps(roadmap)
+        if source_changed and previous_status == "done":
+            roadmap.has_source_updates = True
+    elif previous_status == "done" and _active_roadmap_steps(roadmap):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="reopen the task through its roadmap",
+        )
+    elif source_changed:
+        _mark_roadmap_pending(roadmap)
+
+    await session.commit()
+    await session.refresh(task)
+    return TaskResponse(task=_task_body(task))
+
+
+@router.patch("/tasks/{task_id}", response_model=TaskResponse)
+async def update_task_endpoint(
+    task_id: UUID,
+    request: TaskUpdateRequest,
+    background_tasks: BackgroundTasks,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskResponse:
+    response = await update_task(
+        task_id=task_id,
+        request=request,
+        auth_user=auth_user,
+        session=session,
+    )
+    if (
+        response.task.status != "done"
+        and response.task.roadmap is not None
+        and response.task.roadmap.generation_status == "pending"
+    ):
+        background_tasks.add_task(generate_task_roadmap_background, task_id)
+    return response
+
+
+@router.post("/tasks/{task_id}/roadmap/generate", response_model=TaskResponse)
+async def generate_task_roadmap_endpoint(
+    task_id: UUID,
+    request: RoadmapGenerateRequest,
+    background_tasks: BackgroundTasks,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskResponse:
+    task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
+    roadmap = _ensure_roadmap(task)
+    _check_roadmap_version(roadmap, request.expected_version)
+    is_initial_generation = not _active_roadmap_steps(roadmap) and not roadmap.overview
+    if task.status == "done" and not request.reopen and not is_initial_generation:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="completed task must be reopened before roadmap generation",
+        )
+    if request.reopen:
+        task.status = "in_progress"
+
+    generation_token = _mark_roadmap_pending(roadmap)
+    roadmap.has_source_updates = False
+    await session.commit()
+    await session.refresh(task)
+    background_tasks.add_task(
+        generate_task_roadmap_background,
+        task.id,
+        generation_token,
+    )
+    return TaskResponse(task=_task_body(task))
+
+
+@router.post(
+    "/tasks/{task_id}/roadmap/steps",
+    response_model=TaskResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_roadmap_step(
+    task_id: UUID,
+    request: RoadmapStepCreateRequest,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskResponse:
+    task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
+    roadmap = _ensure_roadmap(task)
+    _check_roadmap_version(roadmap, request.expected_version)
+    title = _required_roadmap_text(request.title, "step title", 255)
+    description = _required_roadmap_text(request.description, "step description", 5000)
+    next_position = max((step.position for step in roadmap.steps), default=-1) + 1
+    roadmap.steps.append(
+        TaskRoadmapStep(
+            title=title,
+            description=description,
+            status="todo",
+            position=next_position,
+            source="user",
+            user_edited=True,
+            is_deleted=False,
+        )
+    )
+    roadmap.version += 1
+    roadmap.has_source_updates = False
+    if task.status == "done":
+        task.status = "in_progress"
+    await session.commit()
+    await session.refresh(task)
+    return TaskResponse(task=_task_body(task))
+
+
+@router.patch(
+    "/tasks/{task_id}/roadmap/steps/{step_id}",
+    response_model=TaskResponse,
+)
+async def update_roadmap_step(
+    task_id: UUID,
+    step_id: UUID,
+    request: RoadmapStepUpdateRequest,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskResponse:
+    task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
+    roadmap = _ensure_roadmap(task)
+    _check_roadmap_version(roadmap, request.expected_version)
+    step = _find_roadmap_step(roadmap, step_id)
+
+    if hasattr(request, "model_dump"):
+        payload = request.model_dump(exclude_unset=True)
+    else:
+        payload = request.dict(exclude_unset=True)
+
+    content_changed = False
+    if "title" in payload:
+        step.title = _required_roadmap_text(payload["title"], "step title", 255)
+        content_changed = True
+    if "description" in payload:
+        step.description = _required_roadmap_text(
+            payload["description"],
+            "step description",
+            5000,
+        )
+        content_changed = True
+    if "status" in payload:
+        next_status = _validate_status(payload["status"])
+        if task.status == "done" and next_status != "done":
+            if not request.reopen_task:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="reopen_task is required",
+                )
+            task.status = "in_progress"
+        step.status = next_status
+    if content_changed:
+        step.user_edited = True
+
+    roadmap.version += 1
+    _sync_task_completion_from_steps(task, roadmap)
+    await session.commit()
+    await session.refresh(task)
+    return TaskResponse(task=_task_body(task))
+
+
+@router.delete(
+    "/tasks/{task_id}/roadmap/steps/{step_id}",
+    response_model=TaskResponse,
+)
+async def delete_roadmap_step(
+    task_id: UUID,
+    step_id: UUID,
+    expected_version: int | None = None,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskResponse:
+    task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
+    roadmap = _ensure_roadmap(task)
+    _check_roadmap_version(roadmap, expected_version)
+    step = _find_roadmap_step(roadmap, step_id)
+    step.is_deleted = True
+    step.user_edited = True
+    roadmap.version += 1
+    _sync_task_completion_from_steps(task, roadmap)
+    await session.commit()
+    await session.refresh(task)
+    return TaskResponse(task=_task_body(task))
+
+
+@router.put("/tasks/{task_id}/roadmap/reorder", response_model=TaskResponse)
+async def reorder_roadmap_steps(
+    task_id: UUID,
+    request: RoadmapStepReorderRequest,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskResponse:
+    task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
+    roadmap = _ensure_roadmap(task)
+    _check_roadmap_version(roadmap, request.expected_version)
+    active_steps = _active_roadmap_steps(roadmap)
+    active_map = {step.id: step for step in active_steps}
+    if len(request.step_ids) != len(set(request.step_ids)) or set(request.step_ids) != set(active_map):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="step_ids must contain every active roadmap step exactly once",
+        )
+
+    for index, step in enumerate(roadmap.steps):
+        step.position = -(index + 1)
+    await session.flush()
+    for position, step_id in enumerate(request.step_ids):
+        active_map[step_id].position = position
+    deleted_steps = [step for step in roadmap.steps if step.is_deleted]
+    for offset, step in enumerate(deleted_steps, start=len(active_steps)):
+        step.position = offset
+    roadmap.version += 1
     await session.commit()
     await session.refresh(task)
     return TaskResponse(task=_task_body(task))
@@ -499,6 +814,307 @@ async def delete_task(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+async def generate_task_roadmap_background(
+    task_id: UUID,
+    generation_token: UUID | None = None,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        task = await _get_task_for_roadmap_generation(session=session, task_id=task_id)
+        if task is None:
+            return
+        roadmap = _ensure_roadmap(task)
+        if generation_token is not None and roadmap.generation_token != generation_token:
+            return
+        if generation_token is None:
+            generation_token = _mark_roadmap_pending(roadmap)
+
+        roadmap.generation_status = "generating"
+        roadmap.generation_error = None
+        await session.commit()
+
+        task_payload = _roadmap_task_prompt_body(task)
+        related_minutes = await _get_task_related_minutes(session=session, task=task)
+        minutes_payload = [
+            {
+                "minutes_id": str(minutes.id),
+                "title": minutes.title,
+                "body": minutes.body,
+                "updated_at": minutes.updated_at.isoformat(),
+            }
+            for minutes in related_minutes
+        ]
+        active_steps = _active_roadmap_steps(roadmap)
+        existing_steps_payload = [_roadmap_step_prompt_body(step) for step in active_steps]
+        deleted_steps_payload = [
+            _roadmap_step_prompt_body(step) for step in roadmap.steps if step.is_deleted
+        ]
+        input_hash = task_roadmap_input_hash(
+            task=task_payload,
+            related_minutes=minutes_payload,
+        )
+        prompt_version = get_task_roadmap_prompt_version()
+
+        if roadmap.input_hash == input_hash and roadmap.prompt_version == prompt_version:
+            roadmap.generation_status = "ready"
+            roadmap.generation_token = None
+            roadmap.has_source_updates = False
+            await session.commit()
+            return
+
+        try:
+            generated = await run_in_threadpool(
+                generate_task_roadmap,
+                task=task_payload,
+                related_minutes=minutes_payload,
+                existing_steps=existing_steps_payload,
+                deleted_steps=deleted_steps_payload,
+            )
+        except Exception as exc:
+            await session.refresh(roadmap)
+            if roadmap.generation_token == generation_token:
+                roadmap.generation_status = "failed"
+                roadmap.generation_error = (
+                    "AIによるロードマップ生成に失敗しました。再試行してください。"
+                    if isinstance(exc, TaskRoadmapGenerationError)
+                    else "ロードマップ生成中に予期しないエラーが発生しました。"
+                )
+                roadmap.generation_token = None
+                await session.commit()
+            return
+
+        await session.refresh(roadmap, attribute_names=["steps"])
+        if roadmap.generation_token != generation_token:
+            return
+        await session.refresh(task)
+        _merge_generated_roadmap(task=task, roadmap=roadmap, generated=generated)
+        roadmap.input_hash = input_hash
+        roadmap.prompt_version = prompt_version
+        roadmap.generation_status = "ready"
+        roadmap.generation_error = None
+        roadmap.generation_token = None
+        roadmap.has_source_updates = False
+        roadmap.last_generated_at = datetime.now(timezone.utc)
+        roadmap.version += 1
+        _sync_task_completion_from_steps(task, roadmap)
+        await session.commit()
+
+
+async def _get_task_for_roadmap_generation(
+    *,
+    session: AsyncSession,
+    task_id: UUID,
+) -> Task | None:
+    result = await session.execute(
+        select(Task)
+        .options(selectinload(Task.roadmap).selectinload(TaskRoadmap.steps))
+        .where(Task.id == task_id, Task.is_deleted.is_(False))
+    )
+    return result.scalar_one_or_none()
+
+
+async def _get_task_related_minutes(
+    *,
+    session: AsyncSession,
+    task: Task,
+) -> list[MeetingMinutes]:
+    statement = (
+        select(MeetingMinutes)
+        .outerjoin(
+            TaskMinutesImpact,
+            TaskMinutesImpact.minutes_id == MeetingMinutes.id,
+        )
+        .where(
+            MeetingMinutes.is_deleted.is_(False),
+            or_(
+                MeetingMinutes.id == task.source_minutes_id,
+                TaskMinutesImpact.task_id == task.id,
+            ),
+        )
+        .distinct()
+        .order_by(MeetingMinutes.updated_at.asc())
+    )
+    result = await session.execute(statement)
+    return list(result.scalars().all())
+
+
+async def mark_minutes_roadmaps_for_regeneration(
+    *,
+    session: AsyncSession,
+    minutes_id: UUID,
+) -> list[tuple[UUID, UUID]]:
+    result = await session.execute(
+        select(Task)
+        .options(selectinload(Task.roadmap).selectinload(TaskRoadmap.steps))
+        .outerjoin(TaskMinutesImpact, TaskMinutesImpact.task_id == Task.id)
+        .where(
+            Task.is_deleted.is_(False),
+            or_(
+                Task.source_minutes_id == minutes_id,
+                TaskMinutesImpact.minutes_id == minutes_id,
+            ),
+        )
+        .distinct()
+    )
+    jobs: list[tuple[UUID, UUID]] = []
+    for task in result.scalars().all():
+        roadmap = _ensure_roadmap(task)
+        if task.status == "done":
+            roadmap.has_source_updates = True
+            continue
+        token = _mark_roadmap_pending(roadmap)
+        jobs.append((task.id, token))
+    return jobs
+
+
+def _merge_generated_roadmap(
+    *,
+    task: Task,
+    roadmap: TaskRoadmap,
+    generated: dict,
+) -> None:
+    roadmap.overview = str(generated["overview"]).strip()
+    all_step_map = {step.id: step for step in roadmap.steps}
+    active_steps = _active_roadmap_steps(roadmap)
+    active_title_map = {_normalized_step_title(step.title): step for step in active_steps}
+    deleted_titles = {
+        _normalized_step_title(step.title) for step in roadmap.steps if step.is_deleted
+    }
+    matched_ids: set[UUID] = set()
+    next_position = max((step.position for step in roadmap.steps), default=-1) + 1
+
+    for generated_step in generated["steps"]:
+        step = all_step_map.get(generated_step.get("existing_step_id"))
+        normalized_title = _normalized_step_title(generated_step["title"])
+        if step is None:
+            step = active_title_map.get(normalized_title)
+        if step is not None:
+            if step.is_deleted:
+                continue
+            matched_ids.add(step.id)
+            if step.source == "ai" and not step.user_edited and step.status == "todo":
+                step.title = generated_step["title"]
+                step.description = generated_step["description"]
+            continue
+        if normalized_title in deleted_titles:
+            continue
+
+        step = TaskRoadmapStep(
+            title=generated_step["title"],
+            description=generated_step["description"],
+            status="done" if task.status == "done" else "todo",
+            position=next_position,
+            source="ai",
+            user_edited=False,
+            is_deleted=False,
+        )
+        roadmap.steps.append(step)
+        next_position += 1
+
+    for step in active_steps:
+        if (
+            step.id not in matched_ids
+            and step.source == "ai"
+            and not step.user_edited
+            and step.status == "todo"
+        ):
+            step.is_deleted = True
+
+
+def _roadmap_task_prompt_body(task: Task) -> dict[str, object]:
+    return {
+        "task_id": str(task.id),
+        "title": task.title,
+        "body": task.body,
+        "status": task.status,
+        "assignee_name": task.assignee_name,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
+    }
+
+
+def _roadmap_step_prompt_body(step: TaskRoadmapStep) -> dict[str, object]:
+    return {
+        "id": str(step.id),
+        "title": step.title,
+        "description": step.description,
+        "status": step.status,
+        "source": step.source,
+        "user_edited": step.user_edited,
+    }
+
+
+def _ensure_roadmap(task: Task) -> TaskRoadmap:
+    if task.roadmap is None:
+        task.roadmap = TaskRoadmap(
+            overview="",
+            generation_status="pending",
+            version=1,
+            has_source_updates=False,
+        )
+    return task.roadmap
+
+
+def _mark_roadmap_pending(roadmap: TaskRoadmap) -> UUID:
+    generation_token = uuid4()
+    roadmap.generation_status = "pending"
+    roadmap.generation_error = None
+    roadmap.generation_token = generation_token
+    roadmap.version += 1
+    return generation_token
+
+
+def _active_roadmap_steps(roadmap: TaskRoadmap) -> list[TaskRoadmapStep]:
+    return sorted(
+        (step for step in roadmap.steps if not step.is_deleted),
+        key=lambda step: step.position,
+    )
+
+
+def _complete_all_roadmap_steps(roadmap: TaskRoadmap) -> None:
+    for step in _active_roadmap_steps(roadmap):
+        step.status = "done"
+
+
+def _sync_task_completion_from_steps(task: Task, roadmap: TaskRoadmap) -> None:
+    steps = _active_roadmap_steps(roadmap)
+    if steps and all(step.status == "done" for step in steps):
+        task.status = "done"
+
+
+def _find_roadmap_step(roadmap: TaskRoadmap, step_id: UUID) -> TaskRoadmapStep:
+    for step in roadmap.steps:
+        if step.id == step_id and not step.is_deleted:
+            return step
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="roadmap step not found",
+    )
+
+
+def _required_roadmap_text(value: object, field_name: str, max_length: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} is required",
+        )
+    return text[:max_length]
+
+
+def _normalized_step_title(value: str) -> str:
+    return " ".join(value.strip().lower().split())
+
+
+def _check_roadmap_version(
+    roadmap: TaskRoadmap,
+    expected_version: int | None,
+) -> None:
+    if expected_version is not None and expected_version != roadmap.version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="roadmap was updated by another user",
+        )
+
+
 async def _get_accessible_task(
     *,
     session: AsyncSession,
@@ -506,7 +1122,9 @@ async def _get_accessible_task(
     task_id: UUID,
 ) -> Task:
     result = await session.execute(
-        select(Task).where(
+        select(Task)
+        .options(selectinload(Task.roadmap).selectinload(TaskRoadmap.steps))
+        .where(
             Task.id == task_id,
             Task.is_deleted.is_(False),
         )
@@ -763,7 +1381,7 @@ def _create_task_from_action(
         member_map=member_map,
     )
 
-    return Task(
+    task = Task(
         team_id=team_id,
         source_minutes_id=source_minutes_id,
         title=title,
@@ -774,6 +1392,13 @@ def _create_task_from_action(
         due_at=_parse_generated_due_at(action.get("due_at")),
         is_deleted=False,
     )
+    task.roadmap = TaskRoadmap(
+        overview="",
+        generation_status="pending",
+        version=1,
+        has_source_updates=False,
+    )
+    return task
 
 
 def _apply_task_action_update(
@@ -970,6 +1595,33 @@ def _task_body(task: Task) -> TaskBody:
         due_at=task.due_at,
         created_at=task.created_at,
         updated_at=task.updated_at,
+        roadmap=_roadmap_body(task.roadmap),
+    )
+
+
+def _roadmap_body(roadmap: TaskRoadmap | None) -> TaskRoadmapBody | None:
+    if roadmap is None or not isinstance(roadmap.id, UUID):
+        return None
+    return TaskRoadmapBody(
+        id=roadmap.id,
+        overview=roadmap.overview,
+        generation_status=roadmap.generation_status,
+        generation_error=roadmap.generation_error,
+        version=roadmap.version,
+        has_source_updates=roadmap.has_source_updates,
+        steps=[
+            RoadmapStepBody(
+                id=step.id,
+                title=step.title,
+                description=step.description,
+                status=step.status,
+                position=step.position,
+                source=step.source,
+                user_edited=step.user_edited,
+            )
+            for step in _active_roadmap_steps(roadmap)
+            if isinstance(step.id, UUID)
+        ],
     )
 
 

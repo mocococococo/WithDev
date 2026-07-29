@@ -4,6 +4,27 @@ import { fetchWithAuth, readErrorDetail } from './http';
 
 export type TaskStatus = 'todo' | 'in_progress' | 'done';
 type ApiTaskStatus = TaskStatus | 'doing';
+export type RoadmapGenerationStatus = 'pending' | 'generating' | 'ready' | 'failed';
+
+export type RoadmapStep = {
+  id: string;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  position: number;
+  source: 'ai' | 'user';
+  user_edited: boolean;
+};
+
+export type TaskRoadmap = {
+  id: string;
+  overview: string;
+  generation_status: RoadmapGenerationStatus;
+  generation_error: string | null;
+  version: number;
+  has_source_updates: boolean;
+  steps: RoadmapStep[];
+};
 
 export type TeamTaskSummary = {
   id: string;
@@ -17,6 +38,7 @@ export type TeamTaskSummary = {
   due_at: number | null;
   created_at: number;
   updated_at: number;
+  roadmap: TaskRoadmap | null;
 };
 
 export type TeamMemberSummary = {
@@ -55,6 +77,27 @@ type ApiTask = {
   due_at?: string | null;
   created_at: string;
   updated_at: string;
+  roadmap?: ApiTaskRoadmap | null;
+};
+
+type ApiRoadmapStep = {
+  id: string;
+  title: string;
+  description: string;
+  status: ApiTaskStatus;
+  position: number;
+  source: 'ai' | 'user';
+  user_edited: boolean;
+};
+
+type ApiTaskRoadmap = {
+  id: string;
+  overview: string;
+  generation_status: RoadmapGenerationStatus;
+  generation_error?: string | null;
+  version: number;
+  has_source_updates: boolean;
+  steps?: ApiRoadmapStep[];
 };
 
 type ApiTaskListResponse = {
@@ -227,6 +270,103 @@ export async function deleteTask(user: User, taskId: string): Promise<void> {
   }
 }
 
+export async function generateTaskRoadmap(
+  user: User,
+  taskId: string,
+  reopen = false,
+  expectedVersion?: number,
+): Promise<TeamTaskSummary> {
+  return mutateTaskRoadmap(user, taskId, '/roadmap/generate', 'POST', {
+    reopen,
+    expected_version: expectedVersion,
+  });
+}
+
+export async function createRoadmapStep(
+  user: User,
+  taskId: string,
+  input: { title: string; description: string },
+  expectedVersion?: number,
+): Promise<TeamTaskSummary> {
+  return mutateTaskRoadmap(user, taskId, '/roadmap/steps', 'POST', {
+    ...input,
+    expected_version: expectedVersion,
+  });
+}
+
+export async function updateRoadmapStep(
+  user: User,
+  taskId: string,
+  stepId: string,
+  input: {
+    title?: string;
+    description?: string;
+    status?: TaskStatus;
+    reopen_task?: boolean;
+  },
+  expectedVersion?: number,
+): Promise<TeamTaskSummary> {
+  return mutateTaskRoadmap(
+    user,
+    taskId,
+    `/roadmap/steps/${stepId}`,
+    'PATCH',
+    { ...input, expected_version: expectedVersion },
+  );
+}
+
+export async function deleteRoadmapStep(
+  user: User,
+  taskId: string,
+  stepId: string,
+  expectedVersion?: number,
+): Promise<TeamTaskSummary> {
+  const versionQuery =
+    expectedVersion === undefined
+      ? ''
+      : `?expected_version=${encodeURIComponent(expectedVersion)}`;
+  return mutateTaskRoadmap(
+    user,
+    taskId,
+    `/roadmap/steps/${stepId}${versionQuery}`,
+    'DELETE',
+  );
+}
+
+export async function reorderRoadmapSteps(
+  user: User,
+  taskId: string,
+  stepIds: string[],
+  expectedVersion?: number,
+): Promise<TeamTaskSummary> {
+  return mutateTaskRoadmap(user, taskId, '/roadmap/reorder', 'PUT', {
+    step_ids: stepIds,
+    expected_version: expectedVersion,
+  });
+}
+
+async function mutateTaskRoadmap(
+  user: User,
+  taskId: string,
+  path: string,
+  method: 'POST' | 'PATCH' | 'PUT' | 'DELETE',
+  body?: object,
+): Promise<TeamTaskSummary> {
+  const response = await fetchWithAuth(user, `/api/tasks/${taskId}${path}`, {
+    method,
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(toTaskError(detail, response.status));
+  }
+  const payload = (await response.json()) as ApiTaskResponse;
+  if (!payload.task) {
+    throw new Error('ロードマップAPIのレスポンスを読み取れませんでした。');
+  }
+  return toTaskSummary(payload.task);
+}
+
 function toTaskSummary(task: ApiTask): TeamTaskSummary {
   return {
     id: task.id,
@@ -240,6 +380,31 @@ function toTaskSummary(task: ApiTask): TeamTaskSummary {
     due_at: task.due_at ? toTimestamp(task.due_at) : null,
     created_at: toTimestamp(task.created_at),
     updated_at: toTimestamp(task.updated_at),
+    roadmap: task.roadmap ? toTaskRoadmap(task.roadmap) : null,
+  };
+}
+
+function toTaskRoadmap(roadmap: ApiTaskRoadmap): TaskRoadmap {
+  return {
+    id: roadmap.id,
+    overview: roadmap.overview,
+    generation_status: roadmap.generation_status,
+    generation_error: roadmap.generation_error ?? null,
+    version: roadmap.version,
+    has_source_updates: roadmap.has_source_updates,
+    steps: Array.isArray(roadmap.steps)
+      ? roadmap.steps
+          .map((step) => ({
+            id: step.id,
+            title: step.title,
+            description: step.description,
+            status: normalizeTaskStatus(step.status),
+            position: step.position,
+            source: step.source,
+            user_edited: step.user_edited,
+          }))
+          .sort((a, b) => a.position - b.position)
+      : [],
   };
 }
 
@@ -258,6 +423,16 @@ function toTaskError(detail: string, status: number) {
   }
   if (status === 403) {
     return 'このチームにアクセスできません。';
+  }
+  if (detail === 'roadmap was updated by another user') {
+    return 'ロードマップが別の操作で更新されました。画面を再読み込みしてから再試行してください。';
+  }
+  if (
+    detail === 'completed task must be reopened before roadmap generation' ||
+    detail === 'reopen_task is required' ||
+    detail === 'reopen the task through its roadmap'
+  ) {
+    return '完了済みタスクは、ロードマップから再オープンしてください。';
   }
   if (status === 404) {
     return '対象のタスクまたは議事録が見つかりません。';

@@ -2,7 +2,9 @@ import type { User } from 'firebase/auth';
 import {
   ArrowLeft,
   CalendarDays,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleUserRound,
   ClipboardList,
   Clock3,
@@ -16,6 +18,7 @@ import {
   PlayCircle,
   PlugZap,
   Plus,
+  RotateCw,
   Save,
   Send,
   ShieldCheck,
@@ -29,12 +32,20 @@ import type { FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   createTeamTask,
+  createRoadmapStep,
+  deleteRoadmapStep,
   deleteTask,
+  fetchTask,
   fetchMinutesTasks,
   fetchTeamMembers,
   fetchTeamTasks,
   generateTeamTasks,
+  generateTaskRoadmap,
+  reorderRoadmapSteps,
+  updateRoadmapStep,
   updateTask,
+  type RoadmapStep,
+  type TaskRoadmap,
   type TaskCreateInput,
   type TaskStatus,
   type TaskUpdateInput,
@@ -92,18 +103,6 @@ type SlackNotice = {
 
 type TeamTask = TeamTaskSummary & {
   roadmap: TaskRoadmap;
-};
-
-type RoadmapStep = {
-  id: string;
-  title: string;
-  description: string;
-  status: TaskStatus;
-};
-
-type TaskRoadmap = {
-  overview: string;
-  steps: RoadmapStep[];
 };
 
 const roleLabels: Record<TeamRole, string> = {
@@ -288,42 +287,22 @@ function AiboardSlackResultScreen() {
   );
 }
 
-function createPlaceholderRoadmap(taskTitle: string): TaskRoadmap {
+function createPendingRoadmap(taskId: string): TaskRoadmap {
   return {
-    overview: `「${taskTitle}」を進めるための仮ロードマップです。今はフロントエンドだけで表示確認するための内容ですが、将来的にはバックエンドからタスクごとのロードマップを取得して差し替えます。`,
-    steps: [
-      {
-        id: 'step_understand',
-        title: '目的を確認する',
-        description: 'このタスクで達成したい状態と、完了と判断できる条件を整理します。',
-        status: 'done',
-      },
-      {
-        id: 'step_collect',
-        title: '必要な情報を集める',
-        description: '関連するミーティング、議事録、チーム内の前提を確認します。',
-        status: 'in_progress',
-      },
-      {
-        id: 'step_execute',
-        title: '作業を実行する',
-        description: '整理した方針に沿ってタスクを進め、必要に応じて途中経過を共有します。',
-        status: 'todo',
-      },
-      {
-        id: 'step_share',
-        title: '結果を共有する',
-        description: '完了した内容、残った論点、次に必要なアクションをチームに共有します。',
-        status: 'todo',
-      },
-    ],
+    id: `pending-${taskId}`,
+    overview: '',
+    generation_status: 'pending',
+    generation_error: null,
+    version: 1,
+    has_source_updates: false,
+    steps: [],
   };
 }
 
 function withRoadmap(task: TeamTaskSummary): TeamTask {
   return {
     ...task,
-    roadmap: createPlaceholderRoadmap(task.title),
+    roadmap: task.roadmap ?? createPendingRoadmap(task.id),
   };
 }
 
@@ -1428,6 +1407,23 @@ type TaskDetailScreenProps = {
   onBack: () => void;
   onSaveTask: (taskId: string, input: TaskUpdateInput) => Promise<void>;
   onDeleteTask: (taskId: string) => Promise<void>;
+  onGenerateRoadmap: (taskId: string, reopen?: boolean) => Promise<void>;
+  onCreateRoadmapStep: (
+    taskId: string,
+    input: { title: string; description: string },
+  ) => Promise<void>;
+  onUpdateRoadmapStep: (
+    taskId: string,
+    stepId: string,
+    input: {
+      title?: string;
+      description?: string;
+      status?: TaskStatus;
+      reopen_task?: boolean;
+    },
+  ) => Promise<void>;
+  onDeleteRoadmapStep: (taskId: string, stepId: string) => Promise<void>;
+  onReorderRoadmapSteps: (taskId: string, stepIds: string[]) => Promise<void>;
   onLogout: () => void;
 };
 
@@ -1439,6 +1435,11 @@ function TaskDetailScreen({
   onBack,
   onSaveTask,
   onDeleteTask,
+  onGenerateRoadmap,
+  onCreateRoadmapStep,
+  onUpdateRoadmapStep,
+  onDeleteRoadmapStep,
+  onReorderRoadmapSteps,
   onLogout,
 }: TaskDetailScreenProps) {
   const completedSteps = task.roadmap.steps.filter((step) => step.status === 'done').length;
@@ -1458,6 +1459,10 @@ function TaskDetailScreen({
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [roadmapAction, setRoadmapAction] = useState<string | null>(null);
+  const [editingStepId, setEditingStepId] = useState<string | null>(null);
+  const [stepDraft, setStepDraft] = useState({ title: '', description: '' });
+  const [newStepDraft, setNewStepDraft] = useState({ title: '', description: '' });
   const isDirty = JSON.stringify(draft) !== JSON.stringify(initialDraft);
   const filteredMembers = useMemo(() => {
     const query = memberQuery.trim().toLowerCase();
@@ -1475,6 +1480,63 @@ function TaskDetailScreen({
     setMemberQuery('');
     setError(null);
   }, [initialDraft]);
+
+  const runRoadmapAction = async (actionId: string, action: () => Promise<void>) => {
+    setError(null);
+    setRoadmapAction(actionId);
+    try {
+      await action();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'ロードマップの更新に失敗しました。');
+    } finally {
+      setRoadmapAction(null);
+    }
+  };
+
+  const beginStepEdit = (step: RoadmapStep) => {
+    setEditingStepId(step.id);
+    setStepDraft({ title: step.title, description: step.description });
+  };
+
+  const handleCreateStep = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!newStepDraft.title.trim() || !newStepDraft.description.trim()) return;
+    await runRoadmapAction('create-step', async () => {
+      await onCreateRoadmapStep(task.id, {
+        title: newStepDraft.title.trim(),
+        description: newStepDraft.description.trim(),
+      });
+      setNewStepDraft({ title: '', description: '' });
+    });
+  };
+
+  const handleSaveStep = async (stepId: string) => {
+    if (!stepDraft.title.trim() || !stepDraft.description.trim()) return;
+    await runRoadmapAction(`edit-${stepId}`, async () => {
+      await onUpdateRoadmapStep(task.id, stepId, {
+        title: stepDraft.title.trim(),
+        description: stepDraft.description.trim(),
+      });
+      setEditingStepId(null);
+    });
+  };
+
+  const handleStepStatus = async (step: RoadmapStep, status: TaskStatus) => {
+    await runRoadmapAction(`status-${step.id}`, () =>
+      onUpdateRoadmapStep(task.id, step.id, {
+        status,
+        reopen_task: task.status === 'done' && status !== 'done',
+      }),
+    );
+  };
+
+  const handleMoveStep = async (stepIndex: number, direction: -1 | 1) => {
+    const nextIndex = stepIndex + direction;
+    if (nextIndex < 0 || nextIndex >= task.roadmap.steps.length) return;
+    const stepIds = task.roadmap.steps.map((step) => step.id);
+    [stepIds[stepIndex], stepIds[nextIndex]] = [stepIds[nextIndex], stepIds[stepIndex]];
+    await runRoadmapAction('reorder', () => onReorderRoadmapSteps(task.id, stepIds));
+  };
 
   const canSave = isDirty && draft.title.trim().length > 0 && draft.body.trim().length > 0 && !isSaving;
 
@@ -1708,7 +1770,7 @@ function TaskDetailScreen({
               <div>
                 <p className="eyebrow">Roadmap</p>
                 <h2>完了までの道筋</h2>
-                <p>{task.roadmap.overview}</p>
+                {task.roadmap.overview && <p>{task.roadmap.overview}</p>}
               </div>
             </div>
             <span className="roadmap-progress">
@@ -1716,20 +1778,235 @@ function TaskDetailScreen({
             </span>
           </div>
 
-          <div className="roadmap-step-list">
-            {task.roadmap.steps.map((step, index) => (
-              <article className={`roadmap-step ${step.status}`} key={step.id}>
-                <span className="roadmap-step-index">{index + 1}</span>
-                <div>
-                  <div className="roadmap-step-title">
-                    <h3>{step.title}</h3>
-                    <TaskStatusBadge status={step.status} />
+          {task.roadmap.has_source_updates && task.status === 'done' && (
+            <div className="roadmap-notice">
+              <div>
+                <strong>完了後に関連情報が更新されました</strong>
+                <p>タスクを再オープンして、最新情報からロードマップを再生成できます。</p>
+              </div>
+              <button
+                className="secondary-button"
+                disabled={roadmapAction !== null}
+                type="button"
+                onClick={() =>
+                  void runRoadmapAction('regenerate', () =>
+                    onGenerateRoadmap(task.id, true),
+                  )
+                }
+              >
+                <RotateCw size={16} />
+                再オープンして再生成
+              </button>
+            </div>
+          )}
+
+          {(task.roadmap.generation_status === 'pending' ||
+            task.roadmap.generation_status === 'generating') && (
+            <div className="roadmap-generation-state">
+              <Loader2 className="spin" size={22} />
+              <div>
+                <strong>AIがロードマップを生成しています</strong>
+                <p>タスクは保存済みです。この画面を開いたまま待つことができます。</p>
+              </div>
+              <button
+                className="quiet-button"
+                disabled={roadmapAction !== null}
+                type="button"
+                onClick={() =>
+                  void runRoadmapAction('restart-generation', () =>
+                    onGenerateRoadmap(task.id),
+                  )
+                }
+              >
+                <RotateCw size={15} />
+                生成をやり直す
+              </button>
+            </div>
+          )}
+
+          {task.roadmap.generation_status === 'failed' && (
+            <div className="roadmap-generation-state error">
+              <div>
+                <strong>ロードマップを生成できませんでした</strong>
+                <p>{task.roadmap.generation_error ?? '時間をおいて再試行してください。'}</p>
+              </div>
+              <button
+                className="secondary-button"
+                disabled={roadmapAction !== null}
+                type="button"
+                onClick={() =>
+                  void runRoadmapAction('retry', () => onGenerateRoadmap(task.id))
+                }
+              >
+                <RotateCw size={16} />
+                再試行
+              </button>
+            </div>
+          )}
+
+          {task.roadmap.steps.length > 0 && (
+            <div className="roadmap-step-list">
+              {task.roadmap.steps.map((step, index) => (
+                <article className={`roadmap-step ${step.status}`} key={step.id}>
+                  <span className="roadmap-step-index">{index + 1}</span>
+                  <div>
+                    {editingStepId === step.id ? (
+                      <div className="roadmap-step-editor">
+                        <input
+                          aria-label="ステップ名"
+                          maxLength={255}
+                          value={stepDraft.title}
+                          onChange={(event) =>
+                            setStepDraft((current) => ({
+                              ...current,
+                              title: event.target.value,
+                            }))
+                          }
+                        />
+                        <textarea
+                          aria-label="ステップの説明"
+                          rows={3}
+                          value={stepDraft.description}
+                          onChange={(event) =>
+                            setStepDraft((current) => ({
+                              ...current,
+                              description: event.target.value,
+                            }))
+                          }
+                        />
+                        <div className="roadmap-step-actions">
+                          <button
+                            className="primary-button"
+                            disabled={roadmapAction !== null}
+                            type="button"
+                            onClick={() => void handleSaveStep(step.id)}
+                          >
+                            <Save size={15} />
+                            保存
+                          </button>
+                          <button
+                            className="quiet-button"
+                            type="button"
+                            onClick={() => setEditingStepId(null)}
+                          >
+                            キャンセル
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="roadmap-step-title">
+                          <h3>{step.title}</h3>
+                          <select
+                            aria-label={`${step.title}の状態`}
+                            disabled={roadmapAction !== null}
+                            value={step.status}
+                            onChange={(event) =>
+                              void handleStepStatus(step, event.target.value as TaskStatus)
+                            }
+                          >
+                            <option value="todo">未着手</option>
+                            <option value="in_progress">進行中</option>
+                            <option value="done">完了</option>
+                          </select>
+                        </div>
+                        <p>{step.description}</p>
+                        <div className="roadmap-step-actions">
+                          <button
+                            className="quiet-button"
+                            type="button"
+                            onClick={() => beginStepEdit(step)}
+                          >
+                            編集
+                          </button>
+                          <button
+                            aria-label="一つ上へ"
+                            className="icon-button"
+                            disabled={index === 0 || roadmapAction !== null}
+                            type="button"
+                            onClick={() => void handleMoveStep(index, -1)}
+                          >
+                            <ChevronUp size={16} />
+                          </button>
+                          <button
+                            aria-label="一つ下へ"
+                            className="icon-button"
+                            disabled={
+                              index === task.roadmap.steps.length - 1 ||
+                              roadmapAction !== null
+                            }
+                            type="button"
+                            onClick={() => void handleMoveStep(index, 1)}
+                          >
+                            <ChevronDown size={16} />
+                          </button>
+                          <button
+                            className="danger-link"
+                            disabled={roadmapAction !== null}
+                            type="button"
+                            onClick={() => {
+                              if (!window.confirm('このステップを削除しますか？')) return;
+                              void runRoadmapAction(`delete-${step.id}`, () =>
+                                onDeleteRoadmapStep(task.id, step.id),
+                              );
+                            }}
+                          >
+                            <Trash2 size={15} />
+                            削除
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
-                  <p>{step.description}</p>
-                </div>
-              </article>
-            ))}
-          </div>
+                </article>
+              ))}
+            </div>
+          )}
+
+          {task.roadmap.generation_status === 'ready' &&
+            task.roadmap.steps.length === 0 && (
+              <p className="subtle-copy">ロードマップにはまだステップがありません。</p>
+            )}
+
+          <form className="roadmap-add-step" onSubmit={handleCreateStep}>
+            <div>
+              <strong>ステップを追加</strong>
+              <p>追加したステップは、AIによる再生成でも保持されます。</p>
+            </div>
+            <input
+              aria-label="新しいステップ名"
+              maxLength={255}
+              placeholder="ステップ名"
+              value={newStepDraft.title}
+              onChange={(event) =>
+                setNewStepDraft((current) => ({ ...current, title: event.target.value }))
+              }
+            />
+            <textarea
+              aria-label="新しいステップの説明"
+              placeholder="完了条件が分かる説明"
+              rows={3}
+              value={newStepDraft.description}
+              onChange={(event) =>
+                setNewStepDraft((current) => ({
+                  ...current,
+                  description: event.target.value,
+                }))
+              }
+            />
+            <button
+              className="secondary-button"
+              disabled={
+                roadmapAction !== null ||
+                !newStepDraft.title.trim() ||
+                !newStepDraft.description.trim()
+              }
+              type="submit"
+            >
+              <Plus size={16} />
+              追加
+            </button>
+          </form>
         </section>
       </section>
 
@@ -2494,6 +2771,48 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     ? tasks.filter((task) => task.team_id === selectedTeam.team_id)
     : [];
 
+  useEffect(() => {
+    if (!selectedTask) return;
+    const isGenerating =
+      selectedTask.roadmap.generation_status === 'pending' ||
+      selectedTask.roadmap.generation_status === 'generating';
+    if (!isGenerating) return;
+
+    let isCancelled = false;
+    const refreshRoadmap = async () => {
+      try {
+        const nextTask = selectedTask.roadmap.id.startsWith('pending-')
+          ? await generateTaskRoadmap(currentUser, selectedTask.id)
+          : await fetchTask(currentUser, selectedTask.id);
+        if (!isCancelled) {
+          setTasks((currentTasks) =>
+            currentTasks.map((task) =>
+              task.id === nextTask.id ? withRoadmap(nextTask) : task,
+            ),
+          );
+        }
+      } catch (err) {
+        if (!isCancelled) {
+          setTaskError(
+            err instanceof Error ? err.message : 'ロードマップの状態を取得できませんでした。',
+          );
+        }
+      }
+    };
+
+    void refreshRoadmap();
+    const intervalId = window.setInterval(() => void refreshRoadmap(), 2000);
+    return () => {
+      isCancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [
+    currentUser,
+    selectedTask?.id,
+    selectedTask?.roadmap.generation_status,
+    selectedTask?.roadmap.id,
+  ]);
+
   const handleCreateTeam = async (name: string) => {
     setWorkspaceError(null);
     const team = await createTeam(currentUser, name);
@@ -2579,6 +2898,80 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     );
   };
 
+  const replaceTask = (nextTask: TeamTaskSummary) => {
+    setTasks((currentTasks) =>
+      currentTasks.map((task) =>
+        task.id === nextTask.id ? withRoadmap(nextTask) : task,
+      ),
+    );
+  };
+
+  const roadmapVersion = (taskId: string) =>
+    tasks.find((task) => task.id === taskId)?.roadmap.version;
+
+  const handleGenerateRoadmap = async (taskId: string, reopen = false) => {
+    replaceTask(
+      await generateTaskRoadmap(
+        currentUser,
+        taskId,
+        reopen,
+        roadmapVersion(taskId),
+      ),
+    );
+  };
+
+  const handleCreateRoadmapStep = async (
+    taskId: string,
+    input: { title: string; description: string },
+  ) => {
+    replaceTask(
+      await createRoadmapStep(currentUser, taskId, input, roadmapVersion(taskId)),
+    );
+  };
+
+  const handleUpdateRoadmapStep = async (
+    taskId: string,
+    stepId: string,
+    input: {
+      title?: string;
+      description?: string;
+      status?: TaskStatus;
+      reopen_task?: boolean;
+    },
+  ) => {
+    replaceTask(
+      await updateRoadmapStep(
+        currentUser,
+        taskId,
+        stepId,
+        input,
+        roadmapVersion(taskId),
+      ),
+    );
+  };
+
+  const handleDeleteRoadmapStep = async (taskId: string, stepId: string) => {
+    replaceTask(
+      await deleteRoadmapStep(
+        currentUser,
+        taskId,
+        stepId,
+        roadmapVersion(taskId),
+      ),
+    );
+  };
+
+  const handleReorderRoadmapSteps = async (taskId: string, stepIds: string[]) => {
+    replaceTask(
+      await reorderRoadmapSteps(
+        currentUser,
+        taskId,
+        stepIds,
+        roadmapVersion(taskId),
+      ),
+    );
+  };
+
   const handleDeleteTask = async (taskId: string) => {
     setTaskError(null);
     await deleteTask(currentUser, taskId);
@@ -2636,6 +3029,11 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         onBack={() => navigateTo({ kind: 'teamTasks', teamId: selectedTeam.team_id })}
         onSaveTask={handleSaveTask}
         onDeleteTask={handleDeleteTask}
+        onGenerateRoadmap={handleGenerateRoadmap}
+        onCreateRoadmapStep={handleCreateRoadmapStep}
+        onUpdateRoadmapStep={handleUpdateRoadmapStep}
+        onDeleteRoadmapStep={handleDeleteRoadmapStep}
+        onReorderRoadmapSteps={handleReorderRoadmapSteps}
         onLogout={handleLogout}
       />
     );

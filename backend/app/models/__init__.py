@@ -17,7 +17,13 @@ from app.models.slack import (
     SlackOAuthState,
     SlackPostLog,
 )
-from app.models.task import Task, TaskGenerationRun, TaskMinutesImpact
+from app.models.task import (
+    Task,
+    TaskGenerationRun,
+    TaskMinutesImpact,
+    TaskRoadmap,
+    TaskRoadmapStep,
+)
 from app.models.team import Team, TeamInvite, TeamMember
 from app.models.user import User
 
@@ -41,6 +47,8 @@ __all__ = [
     "Task",
     "TaskGenerationRun",
     "TaskMinutesImpact",
+    "TaskRoadmap",
+    "TaskRoadmapStep",
     "Team",
     "TeamInvite",
     "TeamMember",
