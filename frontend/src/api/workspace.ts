@@ -216,28 +216,6 @@ export async function fetchMeetingMinutes(
   return toMinutesSummary(payload.minutes);
 }
 
-export async function generateMeetingMinutesFromText(
-  user: User,
-  meetingId: string,
-  text: string,
-): Promise<MeetingMinutesSummary> {
-  const response = await fetchWithAuth(user, `/api/meetings/${meetingId}/minutes/from-text`, {
-    method: 'POST',
-    body: JSON.stringify({ text }),
-  });
-  if (!response.ok) {
-    const detail = await readErrorDetail(response);
-    throw new Error(toWorkspaceError(detail, response.status));
-  }
-
-  const payload = (await response.json()) as ApiMinutesResponse;
-  if (!payload.minutes) {
-    throw new Error('議事録生成APIのレスポンスを読み取れませんでした。');
-  }
-
-  return toMinutesSummary(payload.minutes);
-}
-
 function toMeetingSummary(meeting: ApiMeeting): MeetingSummary {
   return {
     id: meeting.id,
@@ -284,15 +262,6 @@ function toWorkspaceError(detail: string, status: number) {
   }
   if (detail === 'title is required') {
     return 'ミーティングタイトルを入力してください。';
-  }
-  if (detail === 'text is required') {
-    return '文字起こしを入力してください。';
-  }
-  if (detail === 'text must be 50000 characters or less') {
-    return '文字起こしは50,000文字以内にしてください。';
-  }
-  if (detail === 'failed to generate minutes') {
-    return '議事録の生成に失敗しました。時間をおいて再試行してください。';
   }
   if (
     detail === 'aiboard api is not configured' ||

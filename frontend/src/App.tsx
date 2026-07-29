@@ -44,8 +44,6 @@ import {
   fetchMeetingDetail,
   fetchMeetingMinutes,
   fetchTeamMeetings,
-  generateMeetingMinutesFromText,
-  type MeetingMinutesSummary,
   type MeetingStatus,
   type MeetingSummary,
   type TeamRole,
@@ -54,7 +52,6 @@ import {
 import {
   fetchSlackConnection,
   fetchSlackChannels,
-  generateMeetingMinutesToSlack,
   postMinutesToSlack,
   startSlackOAuth,
   updateSlackDefaultChannel,
@@ -80,7 +77,6 @@ import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthCont
 
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
 const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
-const maxMinutesSourceLength = 50_000;
 
 type MeetingFilter = 'all' | MeetingStatus;
 type TaskFilter = 'all' | TaskStatus;
@@ -1644,209 +1640,6 @@ function TaskDetailScreen({
   );
 }
 
-type MinutesGeneratorPanelProps = {
-  user: User;
-  team: UserTeamSummary;
-  meeting: MeetingSummary;
-  onGenerated: (meetingId: string, minutes: MeetingMinutesSummary) => void;
-};
-
-function MinutesGeneratorPanel({ user, team, meeting, onGenerated }: MinutesGeneratorPanelProps) {
-  const [sourceText, setSourceText] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isGeneratingToSlack, setIsGeneratingToSlack] = useState(false);
-  const [channels, setChannels] = useState<SlackChannel[]>([]);
-  const [selectedChannelId, setSelectedChannelId] = useState('');
-  const [isLoadingChannels, setIsLoadingChannels] = useState(false);
-  const [isStartingSlack, setIsStartingSlack] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [slackError, setSlackError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const textLength = sourceText.length;
-  const isBusy = isGenerating || isGeneratingToSlack;
-  const canGenerate = sourceText.trim().length > 0 && textLength <= maxMinutesSourceLength && !isBusy;
-  const canGenerateToSlack = canGenerate && selectedChannelId.length > 0;
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    setIsLoadingChannels(true);
-    setSlackError(null);
-    setSuccess(null);
-
-    void fetchSlackChannels(user, team.team_id)
-      .then((nextChannels) => {
-        if (isCancelled) return;
-        setChannels(nextChannels);
-        setSelectedChannelId((currentValue) => currentValue || nextChannels[0]?.id || '');
-      })
-      .catch((err) => {
-        if (isCancelled) return;
-        setChannels([]);
-        setSelectedChannelId('');
-        setSlackError(err instanceof Error ? err.message : 'Slackチャンネル一覧の取得に失敗しました。');
-      })
-      .finally(() => {
-        if (!isCancelled) {
-          setIsLoadingChannels(false);
-        }
-      });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [team.team_id, user]);
-
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!canGenerate) return;
-
-    setError(null);
-    setSuccess(null);
-    setIsGenerating(true);
-    try {
-      const minutes = await generateMeetingMinutesFromText(user, meeting.id, sourceText.trim());
-      onGenerated(meeting.id, minutes);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '議事録の生成に失敗しました。');
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  const handleGenerateToSlack = async () => {
-    if (!canGenerateToSlack) return;
-
-    setError(null);
-    setSlackError(null);
-    setSuccess(null);
-    setIsGeneratingToSlack(true);
-    try {
-      const result = await generateMeetingMinutesToSlack(
-        user,
-        meeting.id,
-        sourceText.trim(),
-        selectedChannelId,
-      );
-      onGenerated(meeting.id, result.minutes);
-      const channelName =
-        result.slackPost.channel_name ||
-        channels.find((channel) => channel.id === selectedChannelId)?.name;
-      setSuccess(`${channelName ? `#${channelName}` : 'Slack'} に議事録を送信しました。`);
-    } catch (err) {
-      setSlackError(err instanceof Error ? err.message : 'Slack投稿付き議事録生成に失敗しました。');
-    } finally {
-      setIsGeneratingToSlack(false);
-    }
-  };
-
-  const handleStartSlackOAuth = async () => {
-    setError(null);
-    setSlackError(null);
-    setSuccess(null);
-    setIsStartingSlack(true);
-    try {
-      const url = await startSlackOAuth(user, team.team_id);
-      window.location.assign(url);
-    } catch (err) {
-      setSlackError(err instanceof Error ? err.message : 'Slack連携を開始できませんでした。');
-      setIsStartingSlack(false);
-    }
-  };
-
-  return (
-    <form className="minutes-generator" onSubmit={handleSubmit}>
-      <div className="section-title-row">
-        <span className="section-icon">
-          <Sparkles size={22} />
-        </span>
-        <div>
-          <p className="eyebrow">Generate minutes</p>
-          <h2>議事録を生成</h2>
-        </div>
-      </div>
-
-      <label className="field-label" htmlFor="minutes-source">
-        文字起こし
-      </label>
-      <textarea
-        id="minutes-source"
-        value={sourceText}
-        maxLength={maxMinutesSourceLength + 1}
-        onChange={(event) => setSourceText(event.target.value)}
-        placeholder="会議の文字起こしやメモを貼り付けてください。"
-      />
-
-      <div className="minutes-generator-footer">
-        <span className={textLength > maxMinutesSourceLength ? 'count-text error' : 'count-text'}>
-          {textLength}/{maxMinutesSourceLength}
-        </span>
-        <button className="secondary-button" type="submit" disabled={!canGenerate}>
-          {isGenerating ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
-          {isGenerating ? '生成中' : '議事録を生成'}
-        </button>
-        <button
-          className="primary-button"
-          type="button"
-          onClick={() => void handleGenerateToSlack()}
-          disabled={!canGenerateToSlack}
-        >
-          {isGeneratingToSlack ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-          {isGeneratingToSlack ? '送信中' : '生成してSlackに送信'}
-        </button>
-      </div>
-
-      <div className="minutes-slack-controls">
-        {isLoadingChannels ? (
-          <div className="inline-loading">
-            <Loader2 className="spin" size={18} />
-            <span>Slackチャンネルを読み込み中</span>
-          </div>
-        ) : channels.length > 0 ? (
-          <div className="slack-post-controls">
-            <label className="field-label" htmlFor="minutes-slack-channel">
-              Slack送信先チャンネル
-            </label>
-            <div className="slack-select-row">
-              <span className="select-icon">
-                <Hash size={18} />
-              </span>
-              <select
-                id="minutes-slack-channel"
-                value={selectedChannelId}
-                onChange={(event) => setSelectedChannelId(event.target.value)}
-              >
-                {channels.map((channel) => (
-                  <option key={channel.id} value={channel.id}>
-                    {channel.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        ) : (
-          <div className="slack-empty">
-            <p>Slack連携を完了すると、生成した議事録をそのまま送信できます。</p>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => void handleStartSlackOAuth()}
-              disabled={isStartingSlack}
-            >
-              {isStartingSlack ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
-              Slack連携
-            </button>
-          </div>
-        )}
-      </div>
-
-      {error && <p className="error-text">{error}</p>}
-      {slackError && <p className="error-text">{slackError}</p>}
-      {success && <p className="success-text">{success}</p>}
-    </form>
-  );
-}
-
 type SlackPostPanelProps = {
   user: User;
   team: UserTeamSummary;
@@ -2083,7 +1876,6 @@ type MeetingRoomScreenProps = {
   team: UserTeamSummary;
   meeting: MeetingSummary;
   onBackToList: () => void;
-  onSaveMinutes: (meetingId: string, minutes: MeetingMinutesSummary) => void;
   onGenerateTasks: (minutesId: string) => Promise<void>;
 };
 
@@ -2092,7 +1884,6 @@ function MeetingRoomScreen({
   team,
   meeting,
   onBackToList,
-  onSaveMinutes,
   onGenerateTasks,
 }: MeetingRoomScreenProps) {
   const isActive = meeting.status === 'active';
@@ -2178,7 +1969,6 @@ function MeetingRoomScreen({
           />
         )}
 
-        <MinutesGeneratorPanel user={user} team={team} meeting={meeting} onGenerated={onSaveMinutes} />
         {isActive && meeting.minutes && (
           <MeetingMinutesPanel
             user={user}
@@ -2518,22 +2308,6 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     }
   };
 
-  const handleSaveMinutes = (meetingId: string, minutes: MeetingMinutesSummary) => {
-    const now = Date.now();
-    setMeetings((currentMeetings) =>
-      currentMeetings.map((meeting) =>
-        meeting.id === meetingId
-          ? {
-              ...meeting,
-              minutes_id: minutes.id,
-              minutes: minutes.body,
-              updated_at: now,
-            }
-          : meeting,
-      ),
-    );
-  };
-
   const handleGenerateTasksFromMinutes = async (minutesId: string) => {
     if (!selectedTeam) return;
 
@@ -2621,7 +2395,6 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         team={selectedTeam}
         meeting={selectedMeeting}
         onBackToList={() => setSelectedMeetingId(null)}
-        onSaveMinutes={handleSaveMinutes}
         onGenerateTasks={handleGenerateTasksFromMinutes}
       />
     );
@@ -2728,4 +2501,3 @@ function App() {
 }
 
 export default App;
-

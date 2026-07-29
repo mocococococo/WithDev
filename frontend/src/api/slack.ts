@@ -1,6 +1,5 @@
 import type { User } from 'firebase/auth';
 import { fetchWithAuth, readErrorDetail } from './http';
-import type { MeetingMinutesSummary } from './workspace';
 
 export type SlackChannel = {
   id: string;
@@ -39,20 +38,6 @@ type SlackChannelsResponse = {
 };
 
 type SlackPostResponse = {
-  slack_post?: SlackPost;
-};
-
-type ApiMinutes = {
-  id: string;
-  meeting_id: string;
-  title?: string | null;
-  body: string;
-  created_at: string;
-  updated_at: string;
-};
-
-type MinutesToSlackResponse = {
-  minutes?: ApiMinutes;
   slack_post?: SlackPost;
 };
 
@@ -145,48 +130,6 @@ export async function postMinutesToSlack(
     throw new Error('Slack投稿結果を取得できませんでした。');
   }
   return payload.slack_post;
-}
-
-export async function generateMeetingMinutesToSlack(
-  user: User,
-  meetingId: string,
-  text: string,
-  channelId: string,
-): Promise<{ minutes: MeetingMinutesSummary; slackPost: SlackPost }> {
-  const response = await fetchWithAuth(user, `/api/meetings/${meetingId}/minutes_to_slack`, {
-    method: 'POST',
-    body: JSON.stringify({ text, channel_id: channelId }),
-  });
-  if (!response.ok) {
-    const detail = await readErrorDetail(response);
-    throw new Error(toSlackError(detail, response.status));
-  }
-
-  const payload = (await response.json()) as MinutesToSlackResponse;
-  if (!payload.minutes || !payload.slack_post) {
-    throw new Error('Slack投稿付き議事録生成APIのレスポンスを読み取れませんでした。');
-  }
-
-  return {
-    minutes: toMinutesSummary(payload.minutes),
-    slackPost: payload.slack_post,
-  };
-}
-
-function toMinutesSummary(minutes: ApiMinutes): MeetingMinutesSummary {
-  return {
-    id: minutes.id,
-    meeting_id: minutes.meeting_id,
-    title: minutes.title ?? null,
-    body: minutes.body,
-    created_at: toTimestamp(minutes.created_at),
-    updated_at: toTimestamp(minutes.updated_at),
-  };
-}
-
-function toTimestamp(value: string) {
-  const timestamp = Date.parse(value);
-  return Number.isNaN(timestamp) ? Date.now() : timestamp;
 }
 
 function toSlackError(detail: string, status: number) {
