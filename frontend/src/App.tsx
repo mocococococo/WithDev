@@ -730,7 +730,11 @@ function TaskSidebar({
   const myTasks = useMemo(
     () =>
       currentUserId
-        ? sortTasks(tasks.filter((task) => task.assignee_user_id === currentUserId))
+        ? sortTasks(
+            tasks.filter(
+              (task) => task.assignee_user_id === currentUserId && task.status !== 'done',
+            ),
+          )
         : [],
     [currentUserId, tasks],
   );
@@ -1299,7 +1303,10 @@ function TeamTaskScreen({
       tasks.filter((task) => {
         const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
         const matchesOwnership =
-          ownershipFilter === 'all' || task.assignee_user_id === currentUserId;
+          ownershipFilter === 'all' ||
+          (Boolean(currentUserId) &&
+            task.assignee_user_id === currentUserId &&
+            task.status !== 'done');
         return matchesStatus && matchesOwnership;
       }),
     );
