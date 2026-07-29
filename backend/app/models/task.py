@@ -44,5 +44,29 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     source_minutes = relationship("MeetingMinutes", back_populates="source_tasks")
     assignee_user = relationship("User", back_populates="assigned_tasks")
     notion_sync_logs = relationship("NotionSyncLog", back_populates="task")
+    minutes_impacts = relationship("TaskMinutesImpact", back_populates="task")
 
+
+class TaskMinutesImpact(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "task_minutes_impacts"
+    __table_args__ = (
+        CheckConstraint("action IN ('created', 'updated')", name="task_minutes_impact_action"),
+    )
+
+    task_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("tasks.id"),
+        nullable=False,
+        index=True,
+    )
+    minutes_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("minutes.id"),
+        nullable=False,
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    task = relationship("Task", back_populates="minutes_impacts")
+    minutes = relationship("MeetingMinutes", back_populates="task_impacts")
 

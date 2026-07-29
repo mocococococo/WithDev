@@ -25,3 +25,4 @@ class MeetingMinutes(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     meeting = relationship("Meeting", back_populates="minutes")
     slack_post_logs = relationship("SlackPostLog", back_populates="minutes")
     source_tasks = relationship("Task", back_populates="source_minutes")
+    task_impacts = relationship("TaskMinutesImpact", back_populates="minutes")

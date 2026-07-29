@@ -30,6 +30,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   createTeamTask,
   deleteTask,
+  fetchMinutesTasks,
   fetchTeamMembers,
   fetchTeamTasks,
   generateTeamTasks,
@@ -1896,16 +1897,105 @@ type MeetingMinutesPanelProps = {
   team: UserTeamSummary;
   meeting: MeetingSummary;
   onGenerateTasks: (minutesId: string) => Promise<void>;
+  onOpenTask: (taskId: string) => void;
 };
+
+type MeetingRelatedTasksProps = {
+  user: User;
+  teamId: string;
+  minutesId: string;
+  refreshVersion: number;
+  onOpenTask: (taskId: string) => void;
+};
+
+function MeetingRelatedTasks({
+  user,
+  teamId,
+  minutesId,
+  refreshVersion,
+  onOpenTask,
+}: MeetingRelatedTasksProps) {
+  const [relatedTasks, setRelatedTasks] = useState<TeamTask[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isCancelled = false;
+    setIsLoading(true);
+    setError(null);
+
+    void fetchMinutesTasks(user, teamId, minutesId)
+      .then((nextTasks) => {
+        if (!isCancelled) {
+          setRelatedTasks(withRoadmaps(nextTasks));
+        }
+      })
+      .catch((err) => {
+        if (!isCancelled) {
+          setRelatedTasks([]);
+          setError(
+            err instanceof Error ? err.message : '議事録の関連タスクを取得できませんでした。',
+          );
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [minutesId, refreshVersion, teamId, user]);
+
+  return (
+    <section className="minutes-task-panel">
+      <div className="section-title-row">
+        <span className="section-icon">
+          <ClipboardList size={22} />
+        </span>
+        <div>
+          <p className="eyebrow">Related tasks</p>
+          <h2>この議事録から作成・更新されたタスク</h2>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="inline-loading">
+          <Loader2 className="spin" size={18} />
+          <span>関連タスクを読み込み中</span>
+        </div>
+      ) : error ? (
+        <p className="error-text">{error}</p>
+      ) : relatedTasks.length > 0 ? (
+        <div className="task-list compact">
+          {sortTasks(relatedTasks).map((task) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              compact
+              onOpen={() => onOpenTask(task.id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="task-empty">この議事録に関連するタスクはありません。</p>
+      )}
+    </section>
+  );
+}
 
 function MeetingMinutesPanel({
   user,
   team,
   meeting,
   onGenerateTasks,
+  onOpenTask,
 }: MeetingMinutesPanelProps) {
   const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
   const [taskGenerationError, setTaskGenerationError] = useState<string | null>(null);
+  const [taskRefreshVersion, setTaskRefreshVersion] = useState(0);
 
   const handleGenerateTasks = async () => {
     if (!meeting.minutes_id || isGeneratingTasks) return;
@@ -1914,6 +2004,7 @@ function MeetingMinutesPanel({
     setIsGeneratingTasks(true);
     try {
       await onGenerateTasks(meeting.minutes_id);
+      setTaskRefreshVersion((version) => version + 1);
     } catch (err) {
       setTaskGenerationError(err instanceof Error ? err.message : 'タスク生成に失敗しました。');
     } finally {
@@ -1963,6 +2054,15 @@ function MeetingMinutesPanel({
 
       <p className="minutes-body">{meeting.minutes}</p>
       {taskGenerationError && <p className="error-text">{taskGenerationError}</p>}
+      {meeting.minutes_id && (
+        <MeetingRelatedTasks
+          user={user}
+          teamId={team.team_id}
+          minutesId={meeting.minutes_id}
+          refreshVersion={taskRefreshVersion}
+          onOpenTask={onOpenTask}
+        />
+      )}
       <SlackPostPanel user={user} team={team} meeting={meeting} />
     </section>
   );
@@ -1974,6 +2074,7 @@ type MeetingRoomScreenProps = {
   meeting: MeetingSummary;
   onBackToList: () => void;
   onGenerateTasks: (minutesId: string) => Promise<void>;
+  onOpenTask: (taskId: string) => void;
 };
 
 function MeetingRoomScreen({
@@ -1982,6 +2083,7 @@ function MeetingRoomScreen({
   meeting,
   onBackToList,
   onGenerateTasks,
+  onOpenTask,
 }: MeetingRoomScreenProps) {
   const isActive = meeting.status === 'active';
   const [hasJoined, setHasJoined] = useState(false);
@@ -2066,6 +2168,7 @@ function MeetingRoomScreen({
             team={team}
             meeting={meeting}
             onGenerateTasks={onGenerateTasks}
+            onOpenTask={onOpenTask}
           />
         )}
 
@@ -2075,6 +2178,7 @@ function MeetingRoomScreen({
             team={team}
             meeting={meeting}
             onGenerateTasks={onGenerateTasks}
+            onOpenTask={onOpenTask}
           />
         )}
       </section>
@@ -2454,7 +2558,6 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setTaskError(null);
     const nextTasks = await generateTeamTasks(currentUser, selectedTeam.team_id, minutesId);
     setTasks(withRoadmaps(nextTasks));
-    navigateTo({ kind: 'teamTasks', teamId: selectedTeam.team_id });
   };
 
   const handleCreateTask = async (input: TaskCreateInput) => {
@@ -2546,6 +2649,9 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         meeting={selectedMeeting}
         onBackToList={() => navigateTo({ kind: 'team', teamId: selectedTeam.team_id })}
         onGenerateTasks={handleGenerateTasksFromMinutes}
+        onOpenTask={(taskId) =>
+          navigateTo({ kind: 'task', teamId: selectedTeam.team_id, taskId })
+        }
       />
     );
   }

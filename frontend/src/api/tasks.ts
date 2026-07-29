@@ -114,6 +114,28 @@ export async function fetchTeamTasks(
   return payload.tasks.map(toTaskSummary);
 }
 
+export async function fetchMinutesTasks(
+  user: User,
+  teamId: string,
+  minutesId: string,
+): Promise<TeamTaskSummary[]> {
+  const response = await fetchWithAuth(
+    user,
+    `/api/teams/${teamId}/minutes/${minutesId}/tasks`,
+  );
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(toTaskError(detail, response.status));
+  }
+
+  const payload = (await response.json()) as ApiTaskListResponse;
+  if (!Array.isArray(payload.tasks)) {
+    throw new Error('議事録の関連タスクAPIのレスポンスを読み取れませんでした。');
+  }
+
+  return payload.tasks.map(toTaskSummary);
+}
+
 export async function createTeamTask(
   user: User,
   teamId: string,

@@ -1110,6 +1110,13 @@ h2 {
   gap: 14px;
 }
 
+.minutes-task-panel {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid #e4e7ec;
+  padding-top: 18px;
+}
+
 .inline-loading,
 .slack-empty {
   display: flex;

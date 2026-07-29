@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -11,7 +11,7 @@ from app.core.auth import AuthenticatedUser, verify_firebase_user
 from app.db.session import get_db_session
 from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
-from app.models.task import Task
+from app.models.task import Task, TaskMinutesImpact
 from app.models.team import TeamMember
 from app.models.user import User
 from app.services.notion_repository import (
@@ -140,6 +140,41 @@ async def list_team_tasks(
     return TaskListResponse(tasks=[_task_body(task) for task in result.scalars().all()])
 
 
+@router.get(
+    "/teams/{team_id}/minutes/{minutes_id}/tasks",
+    response_model=TaskListResponse,
+)
+async def list_minutes_tasks(
+    team_id: UUID,
+    minutes_id: UUID,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskListResponse:
+    await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
+    await _get_accessible_minutes(
+        session=session,
+        team_id=team_id,
+        minutes_id=minutes_id,
+    )
+
+    statement = (
+        select(Task)
+        .outerjoin(TaskMinutesImpact, TaskMinutesImpact.task_id == Task.id)
+        .where(
+            Task.team_id == team_id,
+            Task.is_deleted.is_(False),
+            or_(
+                Task.source_minutes_id == minutes_id,
+                TaskMinutesImpact.minutes_id == minutes_id,
+            ),
+        )
+        .distinct()
+        .order_by(Task.updated_at.desc(), Task.created_at.desc())
+    )
+    result = await session.execute(statement)
+    return TaskListResponse(tasks=[_task_body(task) for task in result.scalars().all()])
+
+
 @router.post(
     "/teams/{team_id}/tasks",
     response_model=TaskResponse,
@@ -233,6 +268,13 @@ async def generate_team_tasks(
                 member_map=member_map,
             )
             session.add(task)
+            session.add(
+                TaskMinutesImpact(
+                    task=task,
+                    minutes_id=minutes.id,
+                    action="created",
+                )
+            )
             created_count += 1
         elif action_name == "update":
             task = _find_action_task(action=action, existing_task_map=existing_task_map)
@@ -244,6 +286,13 @@ async def generate_team_tasks(
                 member_map=member_map,
                 strict_assignee=False,
             ):
+                session.add(
+                    TaskMinutesImpact(
+                        task_id=task.id,
+                        minutes_id=minutes.id,
+                        action="updated",
+                    )
+                )
                 updated_count += 1
         elif action_name == "delete":
             task = _find_action_task(action=action, existing_task_map=existing_task_map)
