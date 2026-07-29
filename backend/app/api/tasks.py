@@ -278,7 +278,7 @@ async def generate_team_tasks(
             created_count += 1
         elif action_name == "update":
             task = _find_action_task(action=action, existing_task_map=existing_task_map)
-            if task is None:
+            if task is None or task.status == "done":
                 continue
             if _apply_task_action_update(
                 task=task,
