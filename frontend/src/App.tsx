@@ -26,7 +26,7 @@ import {
   Video,
 } from 'lucide-react';
 import type { FormEvent } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   createTeamTask,
   deleteTask,
@@ -76,6 +76,13 @@ type MeetingFilter = 'all' | MeetingStatus;
 type TaskFilter = 'all' | TaskStatus;
 type TaskOwnershipFilter = 'all' | 'mine';
 type TeamView = 'meetings' | 'tasks';
+type WorkspaceRoute =
+  | { kind: 'home' }
+  | { kind: 'team'; teamId: string }
+  | { kind: 'teamTasks'; teamId: string }
+  | { kind: 'meeting'; teamId: string; meetingId: string }
+  | { kind: 'task'; teamId: string; taskId: string }
+  | { kind: 'invite'; token: string };
 type SlackNotice = {
   type: 'success' | 'error';
   teamId: string | null;
@@ -128,6 +135,73 @@ const taskOwnershipFilterLabels: Record<TaskOwnershipFilter, string> = {
   mine: '自分のタスク',
 };
 
+function decodeRouteSegment(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function readWorkspaceRoute(pathname = window.location.pathname): WorkspaceRoute {
+  const taskMatch = pathname.match(/^\/teams\/([^/]+)\/tasks\/([^/]+)\/?$/);
+  if (taskMatch) {
+    const teamId = decodeRouteSegment(taskMatch[1]);
+    const taskId = decodeRouteSegment(taskMatch[2]);
+    if (teamId && taskId) return { kind: 'task', teamId, taskId };
+  }
+
+  const meetingMatch = pathname.match(/^\/teams\/([^/]+)\/meetings\/([^/]+)\/?$/);
+  if (meetingMatch) {
+    const teamId = decodeRouteSegment(meetingMatch[1]);
+    const meetingId = decodeRouteSegment(meetingMatch[2]);
+    if (teamId && meetingId) return { kind: 'meeting', teamId, meetingId };
+  }
+
+  const tasksMatch = pathname.match(/^\/teams\/([^/]+)\/tasks\/?$/);
+  if (tasksMatch) {
+    const teamId = decodeRouteSegment(tasksMatch[1]);
+    if (teamId) return { kind: 'teamTasks', teamId };
+  }
+
+  const teamMatch = pathname.match(/^\/teams\/([^/]+)\/?$/);
+  if (teamMatch) {
+    const teamId = decodeRouteSegment(teamMatch[1]);
+    if (teamId) return { kind: 'team', teamId };
+  }
+
+  const inviteMatch = pathname.match(/^\/invite\/([^/]+)\/?$/);
+  if (inviteMatch) {
+    const token = decodeRouteSegment(inviteMatch[1]);
+    if (token) return { kind: 'invite', token };
+  }
+
+  return { kind: 'home' };
+}
+
+function workspaceRoutePath(route: WorkspaceRoute) {
+  switch (route.kind) {
+    case 'team':
+      return `/teams/${encodeURIComponent(route.teamId)}`;
+    case 'teamTasks':
+      return `/teams/${encodeURIComponent(route.teamId)}/tasks`;
+    case 'meeting':
+      return `/teams/${encodeURIComponent(route.teamId)}/meetings/${encodeURIComponent(
+        route.meetingId,
+      )}`;
+    case 'task':
+      return `/teams/${encodeURIComponent(route.teamId)}/tasks/${encodeURIComponent(route.taskId)}`;
+    case 'invite':
+      return `/invite/${encodeURIComponent(route.token)}`;
+    default:
+      return '/home';
+  }
+}
+
+function getRouteTeamId(route: WorkspaceRoute) {
+  return 'teamId' in route ? route.teamId : null;
+}
+
 function shortSha(value: string) {
   return value === 'local' ? value : value.slice(0, 7);
 }
@@ -149,8 +223,6 @@ function readSlackRedirectNotice(): SlackNotice {
   const reason = params.get('reason');
   const isSuccess = pathname === '/slack/success';
 
-  window.history.replaceState({}, '', '/');
-
   return {
     type: isSuccess ? 'success' : 'error',
     teamId,
@@ -158,6 +230,15 @@ function readSlackRedirectNotice(): SlackNotice {
       ? 'Slack連携が完了しました。'
       : `Slack連携に失敗しました。${reason ? ` (${reason})` : ''}`,
   };
+}
+
+function readWorkspaceEntry() {
+  const slackNotice = readSlackRedirectNotice();
+  const route =
+    slackNotice?.teamId
+      ? ({ kind: 'team', teamId: slackNotice.teamId } as const)
+      : readWorkspaceRoute();
+  return { route, slackNotice };
 }
 
 function getAiboardSlackRedirectState() {
@@ -2006,15 +2087,6 @@ function BuildFooter() {
   );
 }
 
-function readInviteToken() {
-  const match = window.location.pathname.match(/^\/invite\/([^/]+)\/?$/);
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function clearInvitePath() {
-  window.history.replaceState({}, '', '/');
-}
-
 type InviteAcceptanceScreenProps = {
   user: User;
   preview: InvitePreview | null;
@@ -2067,6 +2139,8 @@ type WorkspaceAppProps = {
 
 function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const { logout } = useAuth();
+  const [initialEntry] = useState(readWorkspaceEntry);
+  const [route, setRoute] = useState<WorkspaceRoute>(initialEntry.route);
   const [teams, setTeams] = useState<UserTeamSummary[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
@@ -2075,33 +2149,52 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [meetingError, setMeetingError] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
-  const [slackNotice, setSlackNotice] = useState<SlackNotice>(null);
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
-  const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const [selectedTeamView, setSelectedTeamView] = useState<TeamView>('meetings');
+  const [slackNotice] = useState<SlackNotice>(initialEntry.slackNotice);
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [tasks, setTasks] = useState<TeamTask[]>([]);
   const [teamMembers, setTeamMembers] = useState<TeamMemberSummary[]>([]);
-  const [inviteToken, setInviteToken] = useState<string | null>(() => readInviteToken());
   const [invitePreview, setInvitePreview] = useState<InvitePreview | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
-  const [isLoadingInvite, setIsLoadingInvite] = useState(() => Boolean(readInviteToken()));
+  const [isLoadingInvite, setIsLoadingInvite] = useState(initialEntry.route.kind === 'invite');
   const [isAcceptingInvite, setIsAcceptingInvite] = useState(false);
+  const selectedTeamId = getRouteTeamId(route);
+  const selectedMeetingId = route.kind === 'meeting' ? route.meetingId : null;
+  const selectedTaskId = route.kind === 'task' ? route.taskId : null;
+  const selectedTeamView: TeamView =
+    route.kind === 'teamTasks' || route.kind === 'task' ? 'tasks' : 'meetings';
+  const inviteToken = route.kind === 'invite' ? route.token : null;
+
+  const navigateTo = useCallback((nextRoute: WorkspaceRoute, replace = false) => {
+    const nextPath = workspaceRoutePath(nextRoute);
+    if (`${window.location.pathname}${window.location.search}` !== nextPath) {
+      window.history[replace ? 'replaceState' : 'pushState']({}, '', nextPath);
+    }
+    setRoute(nextRoute);
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setRoute(readWorkspaceRoute());
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    const canonicalPath = workspaceRoutePath(route);
+    if (`${window.location.pathname}${window.location.search}` !== canonicalPath) {
+      window.history.replaceState({}, '', canonicalPath);
+    }
+  }, [route]);
 
   useEffect(() => {
     let isCancelled = false;
-    const slackRedirectNotice = readSlackRedirectNotice();
-    const redirectTeamId = slackRedirectNotice?.teamId;
 
     setIsInitializing(true);
     setWorkspaceError(null);
     setMeetingError(null);
-    setSlackNotice(slackRedirectNotice);
-    setSelectedTeamId(null);
-    setSelectedMeetingId(null);
-    setSelectedTaskId(null);
-    setSelectedTeamView('meetings');
     setCurrentUserId(null);
     setMeetings([]);
     setTasks([]);
@@ -2113,13 +2206,15 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         const nextTeams = context.teams;
         setCurrentUserId(context.user.id);
         setTeams(nextTeams);
-        if (
-          redirectTeamId &&
-          nextTeams.some((team) => team.team_id === redirectTeamId)
-        ) {
-          setSelectedTeamId(redirectTeamId);
-          setSelectedTeamView('meetings');
-        }
+        setRoute((currentRoute) => {
+          const routeTeamId = getRouteTeamId(currentRoute);
+          if (routeTeamId && !nextTeams.some((team) => team.team_id === routeTeamId)) {
+            const homeRoute = { kind: 'home' } as const;
+            window.history.replaceState({}, '', workspaceRoutePath(homeRoute));
+            return homeRoute;
+          }
+          return currentRoute;
+        });
       })
       .catch((err) => {
         if (isCancelled) return;
@@ -2150,9 +2245,6 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       };
     }
 
-    setSelectedMeetingId(null);
-    setSelectedTaskId(null);
-    setSelectedTeamView('meetings');
     setIsLoadingMeetings(true);
     setIsLoadingTasks(true);
     setMeetingError(null);
@@ -2161,7 +2253,17 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     void fetchTeamMeetings(currentUser, selectedTeamId)
       .then((nextMeetings) => {
         if (!isCancelled) {
-          setMeetings(nextMeetings);
+          setMeetings((currentMeetings) =>
+            nextMeetings.map((meeting) => {
+              const currentMeeting = currentMeetings.find((current) => current.id === meeting.id);
+              if (!currentMeeting) return meeting;
+              return {
+                ...meeting,
+                minutes_id: currentMeeting.minutes_id ?? meeting.minutes_id,
+                minutes: currentMeeting.minutes ?? meeting.minutes,
+              };
+            }),
+          );
         }
       })
       .catch((err) => {
@@ -2205,6 +2307,47 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   }, [currentUser, selectedTeamId]);
 
   useEffect(() => {
+    let isCancelled = false;
+    if (!selectedTeamId || !selectedMeetingId) {
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    setMeetingError(null);
+    void Promise.all([
+      fetchMeetingDetail(currentUser, selectedMeetingId),
+      fetchMeetingMinutes(currentUser, selectedMeetingId),
+    ])
+      .then(([meeting, minutes]) => {
+        if (isCancelled) return;
+        if (meeting.team_id !== selectedTeamId) {
+          throw new Error('このチームのミーティングではありません。');
+        }
+        const nextMeeting = {
+          ...meeting,
+          minutes_id: minutes?.id ?? null,
+          minutes: minutes?.body ?? null,
+        };
+        setMeetings((currentMeetings) => [
+          nextMeeting,
+          ...currentMeetings.filter((currentMeeting) => currentMeeting.id !== nextMeeting.id),
+        ]);
+      })
+      .catch((err) => {
+        if (!isCancelled) {
+          setMeetingError(
+            err instanceof Error ? err.message : 'ミーティング詳細の取得に失敗しました。',
+          );
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentUser, selectedMeetingId, selectedTeamId]);
+
+  useEffect(() => {
     let cancelled = false;
     if (isInitializing || !inviteToken) return () => { cancelled = true; };
     setIsLoadingInvite(true);
@@ -2213,10 +2356,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       .then((preview) => {
         if (cancelled) return;
         if (preview.already_member) {
-          setSelectedTeamId(preview.team_id);
-          setSelectedTeamView('meetings');
-          setInviteToken(null);
-          clearInvitePath();
+          navigateTo({ kind: 'team', teamId: preview.team_id }, true);
         } else {
           setInvitePreview(preview);
         }
@@ -2228,10 +2368,14 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         if (!cancelled) setIsLoadingInvite(false);
       });
     return () => { cancelled = true; };
-  }, [currentUser, inviteToken, isInitializing]);
+  }, [currentUser, inviteToken, isInitializing, navigateTo]);
   const selectedTeam = teams.find((team) => team.team_id === selectedTeamId) ?? null;
-  const selectedMeeting = meetings.find((meeting) => meeting.id === selectedMeetingId) ?? null;
-  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const selectedMeeting =
+    meetings.find(
+      (meeting) => meeting.id === selectedMeetingId && meeting.team_id === selectedTeamId,
+    ) ?? null;
+  const selectedTask =
+    tasks.find((task) => task.id === selectedTaskId && task.team_id === selectedTeamId) ?? null;
   const teamMeetings = selectedTeam
     ? meetings.filter((meeting) => meeting.team_id === selectedTeam.team_id)
     : [];
@@ -2243,8 +2387,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setWorkspaceError(null);
     const team = await createTeam(currentUser, name);
     setTeams((current) => [...current.filter((item) => item.team_id !== team.team_id), team]);
-    setSelectedTeamId(team.team_id);
-    setSelectedTeamView('meetings');
+    navigateTo({ kind: 'team', teamId: team.team_id });
   };
 
   const handleAcceptInvite = async () => {
@@ -2254,11 +2397,8 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     try {
       const team = await acceptTeamInvite(currentUser, inviteToken);
       setTeams((current) => [...current.filter((item) => item.team_id !== team.team_id), team]);
-      setSelectedTeamId(team.team_id);
-      setSelectedTeamView('meetings');
       setInvitePreview(null);
-      setInviteToken(null);
-      clearInvitePath();
+      navigateTo({ kind: 'team', teamId: team.team_id }, true);
     } catch (err) {
       setInviteError(err instanceof Error ? err.message : 'チームに参加できませんでした。');
     } finally {
@@ -2269,8 +2409,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const handleCancelInvite = () => {
     setInvitePreview(null);
     setInviteError(null);
-    setInviteToken(null);
-    clearInvitePath();
+    navigateTo({ kind: 'home' }, true);
   };
   const handleCreateMeeting = async (title: string, initialTheme: string) => {
     if (!selectedTeam) {
@@ -2296,27 +2435,10 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     }
   };
 
-  const handleOpenMeeting = async (meetingId: string) => {
+  const handleOpenMeeting = (meetingId: string) => {
+    if (!selectedTeam) return;
     setMeetingError(null);
-    try {
-      const [meeting, minutes] = await Promise.all([
-        fetchMeetingDetail(currentUser, meetingId),
-        fetchMeetingMinutes(currentUser, meetingId),
-      ]);
-      const nextMeeting = {
-        ...meeting,
-        minutes_id: minutes?.id ?? null,
-        minutes: minutes?.body ?? null,
-      };
-      setMeetings((currentMeetings) => [
-        nextMeeting,
-        ...currentMeetings.filter((currentMeeting) => currentMeeting.id !== nextMeeting.id),
-      ]);
-      setSelectedTaskId(null);
-      setSelectedMeetingId(nextMeeting.id);
-    } catch (err) {
-      setMeetingError(err instanceof Error ? err.message : 'ミーティング詳細の取得に失敗しました。');
-    }
+    navigateTo({ kind: 'meeting', teamId: selectedTeam.team_id, meetingId });
   };
 
   const handleGenerateTasksFromMinutes = async (minutesId: string) => {
@@ -2325,9 +2447,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setTaskError(null);
     const nextTasks = await generateTeamTasks(currentUser, selectedTeam.team_id, minutesId);
     setTasks(withRoadmaps(nextTasks));
-    setSelectedMeetingId(null);
-    setSelectedTaskId(null);
-    setSelectedTeamView('tasks');
+    navigateTo({ kind: 'teamTasks', teamId: selectedTeam.team_id });
   };
 
   const handleCreateTask = async (input: TaskCreateInput) => {
@@ -2353,8 +2473,9 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setTaskError(null);
     await deleteTask(currentUser, taskId);
     setTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId));
-    setSelectedTaskId(null);
-    setSelectedTeamView('tasks');
+    if (selectedTeam) {
+      navigateTo({ kind: 'teamTasks', teamId: selectedTeam.team_id }, true);
+    }
   };
 
   const handleLogout = () => {
@@ -2402,7 +2523,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         team={selectedTeam}
         task={selectedTask}
         members={teamMembers}
-        onBack={() => setSelectedTaskId(null)}
+        onBack={() => navigateTo({ kind: 'teamTasks', teamId: selectedTeam.team_id })}
         onSaveTask={handleSaveTask}
         onDeleteTask={handleDeleteTask}
         onLogout={handleLogout}
@@ -2416,7 +2537,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         user={currentUser}
         team={selectedTeam}
         meeting={selectedMeeting}
-        onBackToList={() => setSelectedMeetingId(null)}
+        onBackToList={() => navigateTo({ kind: 'team', teamId: selectedTeam.team_id })}
         onGenerateTasks={handleGenerateTasksFromMinutes}
       />
     );
@@ -2432,12 +2553,11 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         currentUserId={currentUserId}
         isLoading={isLoadingTasks}
         error={taskError}
-        onBackToMeetings={() => setSelectedTeamView('meetings')}
+        onBackToMeetings={() => navigateTo({ kind: 'team', teamId: selectedTeam.team_id })}
         onCreateTask={handleCreateTask}
-        onOpenTask={(taskId) => {
-          setSelectedMeetingId(null);
-          setSelectedTaskId(taskId);
-        }}
+        onOpenTask={(taskId) =>
+          navigateTo({ kind: 'task', teamId: selectedTeam.team_id, taskId })
+        }
         onLogout={handleLogout}
       />
     );
@@ -2461,19 +2581,13 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
             ? slackNotice
             : null
         }
-        onBackToTeams={() => {
-          setSelectedTeamId(null);
-          setSelectedMeetingId(null);
-          setSelectedTaskId(null);
-          setSelectedTeamView('meetings');
-        }}
+        onBackToTeams={() => navigateTo({ kind: 'home' })}
         onCreateMeeting={handleCreateMeeting}
-        onOpenMeeting={(meetingId) => void handleOpenMeeting(meetingId)}
-        onOpenTasks={() => setSelectedTeamView('tasks')}
-        onOpenTask={(taskId) => {
-          setSelectedMeetingId(null);
-          setSelectedTaskId(taskId);
-        }}
+        onOpenMeeting={handleOpenMeeting}
+        onOpenTasks={() => navigateTo({ kind: 'teamTasks', teamId: selectedTeam.team_id })}
+        onOpenTask={(taskId) =>
+          navigateTo({ kind: 'task', teamId: selectedTeam.team_id, taskId })
+        }
         onLogout={handleLogout}
       />
     );
@@ -2483,10 +2597,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     <TeamSelectionScreen
       user={currentUser}
       teams={teams}
-      onSelectTeam={(teamId) => {
-        setSelectedTeamId(teamId);
-        setSelectedTeamView('meetings');
-      }}
+      onSelectTeam={(teamId) => navigateTo({ kind: 'team', teamId })}
       onCreateTeam={handleCreateTeam}
       onLogout={handleLogout}
     />
