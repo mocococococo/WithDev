@@ -85,8 +85,6 @@ def generate_task_roadmap(
         response = model.generate_content(
             prompt,
             generation_config=genai.GenerationConfig(
-                candidate_count=1,
-                temperature=0.2,
                 max_output_tokens=2048,
                 response_mime_type="application/json",
                 response_schema=ROADMAP_RESPONSE_SCHEMA,

@@ -758,7 +758,7 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
                 "app.services.task_roadmap_service.get_settings",
                 return_value=SimpleNamespace(
                     gemini_api_key="test-key",
-                    gemini_model="gemini-2.5-flash",
+                    gemini_model="gemini-3.5-flash",
                 ),
             ),
             patch("app.services.task_roadmap_service.genai.configure"),
@@ -777,6 +777,8 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
         generation_config = kwargs["generation_config"]
         request_options = kwargs["request_options"]
         steps_schema = generation_config.response_schema["properties"]["steps"]
+        self.assertIsNone(generation_config.candidate_count)
+        self.assertIsNone(generation_config.temperature)
         self.assertEqual(generation_config.response_mime_type, "application/json")
         self.assertEqual(steps_schema["min_items"], 1)
         self.assertEqual(steps_schema["max_items"], 8)
@@ -795,7 +797,7 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
                 "app.services.task_roadmap_service.get_settings",
                 return_value=SimpleNamespace(
                     gemini_api_key="test-key",
-                    gemini_model="gemini-2.5-flash",
+                    gemini_model="gemini-3.5-flash",
                 ),
             ),
             patch("app.services.task_roadmap_service.genai.configure"),
@@ -827,7 +829,7 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
                 "app.services.task_roadmap_service.get_settings",
                 return_value=SimpleNamespace(
                     gemini_api_key="test-key",
-                    gemini_model="gemini-2.5-flash",
+                    gemini_model="gemini-3.5-flash",
                 ),
             ),
             patch("app.services.task_roadmap_service.genai.configure"),
@@ -854,7 +856,7 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
                 "app.services.task_roadmap_service.get_settings",
                 return_value=SimpleNamespace(
                     gemini_api_key="test-key",
-                    gemini_model="gemini-2.5-flash",
+                    gemini_model="gemini-3.5-flash",
                 ),
             ),
             patch("app.services.task_roadmap_service.genai.configure"),
@@ -893,7 +895,7 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
                 "app.services.task_roadmap_service.get_settings",
                 return_value=SimpleNamespace(
                     gemini_api_key="test-key",
-                    gemini_model="gemini-2.5-flash",
+                    gemini_model="gemini-3.5-flash",
                 ),
             ),
             patch("app.services.task_roadmap_service.genai.configure"),
