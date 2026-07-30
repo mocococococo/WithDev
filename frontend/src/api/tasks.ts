@@ -56,6 +56,19 @@ export type TaskUpdateInput = {
   assignee_name?: string | null;
   status?: TaskStatus;
   due_at?: string | null;
+  roadmap?: RoadmapSaveInput;
+};
+
+export type RoadmapSaveStepInput = {
+  id?: string;
+  title: string;
+  description: string;
+  status: TaskStatus;
+};
+
+export type RoadmapSaveInput = {
+  expected_version: number;
+  steps: RoadmapSaveStepInput[];
 };
 
 export type TaskCreateInput = {
@@ -282,6 +295,14 @@ export async function generateTaskRoadmap(
     reopen,
     expected_version: expectedVersion,
   });
+}
+
+export async function saveTaskRoadmap(
+  user: User,
+  taskId: string,
+  input: RoadmapSaveInput,
+): Promise<TeamTaskSummary> {
+  return mutateTaskRoadmap(user, taskId, '/roadmap', 'PUT', input);
 }
 
 export async function createRoadmapStep(

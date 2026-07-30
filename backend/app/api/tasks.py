@@ -143,6 +143,23 @@ class TaskGenerateResponse(BaseModel):
     deleted_count: int
 
 
+class RoadmapGenerateRequest(BaseModel):
+    reopen: bool = False
+    expected_version: int | None = None
+
+
+class RoadmapStepSaveRequest(BaseModel):
+    id: UUID | None = None
+    title: str
+    description: str
+    status: str
+
+
+class RoadmapSaveRequest(BaseModel):
+    steps: list[RoadmapStepSaveRequest]
+    expected_version: int
+
+
 class TaskUpdateRequest(BaseModel):
     title: str | None = None
     body: str | None = None
@@ -150,11 +167,7 @@ class TaskUpdateRequest(BaseModel):
     assignee_name: str | None = None
     status: str | None = None
     due_at: datetime | None = None
-
-
-class RoadmapGenerateRequest(BaseModel):
-    reopen: bool = False
-    expected_version: int | None = None
+    roadmap: RoadmapSaveRequest | None = None
 
 
 class RoadmapStepCreateRequest(BaseModel):
@@ -516,19 +529,38 @@ async def update_task(
         payload = request.model_dump(exclude_unset=True)
     else:
         payload = request.dict(exclude_unset=True)
+    roadmap_request = request.roadmap
+    payload.pop("roadmap", None)
     previous_status = task.status
+    task_status_was_explicitly_completed = (
+        payload.get("status") is not None
+        and _validate_status(payload["status"]) == "done"
+    )
     source_changed = any(field in payload for field in ("title", "body"))
     _apply_task_patch(task=task, payload=payload, member_map=member_map)
 
-    if task.status == "done":
+    if roadmap_request is not None:
+        await _apply_roadmap_save(
+            session=session,
+            roadmap=roadmap,
+            request=roadmap_request,
+        )
+
+    if task_status_was_explicitly_completed:
         _complete_all_roadmap_steps(roadmap)
-        if source_changed and previous_status == "done":
-            roadmap.has_source_updates = True
+    elif roadmap_request is not None:
+        _sync_task_after_roadmap_save(task, roadmap)
+    elif task.status == "done":
+        _complete_all_roadmap_steps(roadmap)
     elif previous_status == "done" and _active_roadmap_steps(roadmap):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="reopen the task through its roadmap",
         )
+
+    if source_changed and task.status == "done":
+        if previous_status == "done":
+            roadmap.has_source_updates = True
     elif source_changed:
         _mark_roadmap_pending(roadmap)
 
@@ -665,6 +697,27 @@ async def update_roadmap_step(
 
     roadmap.version += 1
     _sync_task_completion_from_steps(task, roadmap)
+    await session.commit()
+    await session.refresh(task)
+    return TaskResponse(task=_task_body(task))
+
+
+@router.put("/tasks/{task_id}/roadmap", response_model=TaskResponse)
+async def save_task_roadmap(
+    task_id: UUID,
+    request: RoadmapSaveRequest,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskResponse:
+    task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
+    roadmap = _ensure_roadmap(task)
+    _reject_changes_while_roadmap_locked(roadmap)
+    await _apply_roadmap_save(
+        session=session,
+        roadmap=roadmap,
+        request=request,
+    )
+    _sync_task_after_roadmap_save(task, roadmap)
     await session.commit()
     await session.refresh(task)
     return TaskResponse(task=_task_body(task))
@@ -1243,6 +1296,100 @@ def _sync_task_completion_from_steps(task: Task, roadmap: TaskRoadmap) -> None:
     steps = _active_roadmap_steps(roadmap)
     if steps and all(step.status == "done" for step in steps):
         task.status = "done"
+
+
+def _sync_task_after_roadmap_save(task: Task, roadmap: TaskRoadmap) -> None:
+    steps = _active_roadmap_steps(roadmap)
+    if steps and all(step.status == "done" for step in steps):
+        task.status = "done"
+    elif task.status == "done" and any(step.status != "done" for step in steps):
+        task.status = "in_progress"
+
+
+async def _apply_roadmap_save(
+    *,
+    session: AsyncSession,
+    roadmap: TaskRoadmap,
+    request: RoadmapSaveRequest,
+) -> None:
+    # Serialize saves for this roadmap so two requests cannot both pass the
+    # optimistic version check before either transaction commits.
+    await session.refresh(
+        roadmap,
+        attribute_names=["version", "generation_status"],
+        with_for_update=True,
+    )
+    _reject_changes_while_roadmap_locked(roadmap)
+    _check_roadmap_version(roadmap, request.expected_version)
+
+    requested_ids = [step.id for step in request.steps if step.id is not None]
+    if len(requested_ids) != len(set(requested_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="roadmap step ids must be unique",
+        )
+
+    active_steps = _active_roadmap_steps(roadmap)
+    active_map = {step.id: step for step in active_steps}
+    unknown_ids = set(requested_ids) - set(active_map)
+    if unknown_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="roadmap step not found",
+        )
+
+    normalized_steps = [
+        (
+            step,
+            _required_roadmap_text(step.title, "step title", 255),
+            _required_roadmap_text(step.description, "step description", 5000),
+            _validate_status(step.status),
+        )
+        for step in request.steps
+    ]
+
+    requested_id_set = set(requested_ids)
+    for step in active_steps:
+        if step.id not in requested_id_set:
+            step.is_deleted = True
+            step.user_edited = True
+
+    # Free every existing position before assigning the submitted order. This
+    # keeps the roadmap_id/position uniqueness constraint valid on PostgreSQL.
+    for index, step in enumerate(roadmap.steps):
+        step.position = -(index + 1)
+    await session.flush()
+
+    for position, (step_input, title, description, step_status) in enumerate(
+        normalized_steps
+    ):
+        if step_input.id is None:
+            roadmap.steps.append(
+                TaskRoadmapStep(
+                    title=title,
+                    description=description,
+                    status=step_status,
+                    position=position,
+                    source="user",
+                    user_edited=True,
+                    is_deleted=False,
+                )
+            )
+            continue
+
+        step = active_map[step_input.id]
+        if step.title != title or step.description != description:
+            step.user_edited = True
+        step.title = title
+        step.description = description
+        step.status = step_status
+        step.position = position
+
+    deleted_steps = [step for step in roadmap.steps if step.is_deleted]
+    for offset, step in enumerate(deleted_steps, start=len(normalized_steps)):
+        step.position = offset
+
+    roadmap.version += 1
 
 
 def _find_roadmap_step(roadmap: TaskRoadmap, step_id: UUID) -> TaskRoadmapStep:

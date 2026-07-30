@@ -9,7 +9,10 @@ from app.api.tasks import (
     RoadmapGenerationClaim,
     RoadmapGenerationInput,
     RoadmapGenerateRequest,
+    RoadmapSaveRequest,
+    RoadmapStepSaveRequest,
     RoadmapStepUpdateRequest,
+    TaskUpdateRequest,
     _claim_task_roadmap_generation,
     _complete_all_roadmap_steps,
     _merge_generated_roadmap,
@@ -20,6 +23,8 @@ from app.api.tasks import (
     _task_roadmap_generation_error_message,
     generate_task_roadmap_endpoint,
     run_task_roadmap_generation,
+    save_task_roadmap,
+    update_task,
     update_roadmap_step,
 )
 from fastapi import HTTPException
@@ -241,6 +246,218 @@ class RoadmapStepApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(step.status, "in_progress")
         self.assertEqual(task.status, "in_progress")
+
+
+class RoadmapSaveApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_saves_add_edit_delete_reorder_and_status_in_one_version(self) -> None:
+        task = make_task(status="in_progress")
+        removed = make_step(task.roadmap, title="削除する作業", position=0)
+        retained = make_step(task.roadmap, title="残す作業", position=1)
+        session = MagicMock()
+        session.flush = AsyncMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+
+        request = RoadmapSaveRequest(
+            expected_version=task.roadmap.version,
+            steps=[
+                RoadmapStepSaveRequest(
+                    id=retained.id,
+                    title="更新した作業",
+                    description="更新した説明",
+                    status="in_progress",
+                ),
+                RoadmapStepSaveRequest(
+                    title="追加した作業",
+                    description="追加した説明",
+                    status="todo",
+                ),
+            ],
+        )
+
+        with patch(
+            "app.api.tasks._get_accessible_task",
+            new_callable=AsyncMock,
+            return_value=task,
+        ):
+            response = await save_task_roadmap(
+                task_id=task.id,
+                request=request,
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        active = sorted(
+            (step for step in task.roadmap.steps if not step.is_deleted),
+            key=lambda step: step.position,
+        )
+        self.assertTrue(removed.is_deleted)
+        self.assertTrue(removed.user_edited)
+        self.assertEqual(
+            [(step.title, step.status, step.position) for step in active],
+            [
+                ("更新した作業", "in_progress", 0),
+                ("追加した作業", "todo", 1),
+            ],
+        )
+        self.assertTrue(retained.user_edited)
+        self.assertEqual(active[1].source, "user")
+        self.assertTrue(active[1].user_edited)
+        self.assertEqual(task.roadmap.version, 2)
+        self.assertEqual(response.task.roadmap.version, 2)
+        session.flush.assert_awaited_once()
+        session.commit.assert_awaited_once()
+
+    async def test_all_done_steps_complete_task(self) -> None:
+        task = make_task(status="in_progress")
+        first = make_step(task.roadmap, title="作業1", position=0)
+        second = make_step(task.roadmap, title="作業2", position=1)
+        session = MagicMock()
+        session.flush = AsyncMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+
+        with patch(
+            "app.api.tasks._get_accessible_task",
+            new_callable=AsyncMock,
+            return_value=task,
+        ):
+            await save_task_roadmap(
+                task_id=task.id,
+                request=RoadmapSaveRequest(
+                    expected_version=task.roadmap.version,
+                    steps=[
+                        RoadmapStepSaveRequest(
+                            id=step.id,
+                            title=step.title,
+                            description=step.description,
+                            status="done",
+                        )
+                        for step in (first, second)
+                    ],
+                ),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        self.assertEqual(task.status, "done")
+
+    async def test_non_done_step_reopens_completed_task(self) -> None:
+        task = make_task(status="done")
+        step = make_step(task.roadmap, title="再確認", position=0, status="done")
+        session = MagicMock()
+        session.flush = AsyncMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+
+        with patch(
+            "app.api.tasks._get_accessible_task",
+            new_callable=AsyncMock,
+            return_value=task,
+        ):
+            await save_task_roadmap(
+                task_id=task.id,
+                request=RoadmapSaveRequest(
+                    expected_version=task.roadmap.version,
+                    steps=[
+                        RoadmapStepSaveRequest(
+                            id=step.id,
+                            title=step.title,
+                            description=step.description,
+                            status="in_progress",
+                        )
+                    ],
+                ),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        self.assertEqual(task.status, "in_progress")
+
+    async def test_rejects_stale_version_before_mutating_steps(self) -> None:
+        task = make_task(status="in_progress")
+        step = make_step(task.roadmap, title="変更しない", position=0)
+        session = MagicMock()
+        session.flush = AsyncMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+
+        with (
+            patch(
+                "app.api.tasks._get_accessible_task",
+                new_callable=AsyncMock,
+                return_value=task,
+            ),
+            self.assertRaises(HTTPException) as raised,
+        ):
+            await save_task_roadmap(
+                task_id=task.id,
+                request=RoadmapSaveRequest(
+                    expected_version=task.roadmap.version + 1,
+                    steps=[
+                        RoadmapStepSaveRequest(
+                            id=step.id,
+                            title="変更後",
+                            description=step.description,
+                            status=step.status,
+                        )
+                    ],
+                ),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(step.title, "変更しない")
+        session.flush.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    async def test_task_and_roadmap_are_saved_in_one_commit(self) -> None:
+        task = make_task(status="in_progress")
+        step = make_step(task.roadmap, title="更新前", position=0)
+        next_due_at = datetime.now(timezone.utc) + timedelta(days=1)
+        session = MagicMock()
+        session.flush = AsyncMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+
+        with (
+            patch(
+                "app.api.tasks._get_accessible_task",
+                new_callable=AsyncMock,
+                return_value=task,
+            ),
+            patch(
+                "app.api.tasks._get_active_team_members",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            await update_task(
+                task_id=task.id,
+                request=TaskUpdateRequest(
+                    due_at=next_due_at,
+                    roadmap=RoadmapSaveRequest(
+                        expected_version=task.roadmap.version,
+                        steps=[
+                            RoadmapStepSaveRequest(
+                                id=step.id,
+                                title="更新後",
+                                description="更新後の説明",
+                                status="in_progress",
+                            )
+                        ],
+                    ),
+                ),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        self.assertEqual(task.due_at, next_due_at)
+        self.assertEqual(step.title, "更新後")
+        self.assertEqual(step.status, "in_progress")
+        self.assertEqual(task.roadmap.version, 2)
+        session.commit.assert_awaited_once()
 
 
 class RoadmapGenerationApiTests(unittest.IsolatedAsyncioTestCase):
