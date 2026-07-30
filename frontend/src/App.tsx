@@ -39,7 +39,9 @@ import {
   fetchTeamTasks,
   generateTeamTasks,
   generateTaskRoadmap,
+  saveTaskRoadmap,
   updateTask,
+  type RoadmapSaveInput,
   type RoadmapSaveStepInput,
   type TaskRoadmap,
   type TaskCreateInput,
@@ -319,6 +321,17 @@ function withRoadmaps(tasks: TeamTaskSummary[]) {
 type RoadmapDraftStep = RoadmapSaveStepInput & {
   clientId: string;
 };
+
+function toTaskDraft(task: TeamTaskSummary) {
+  return {
+    title: task.title,
+    body: task.body,
+    status: task.status,
+    assignee_user_id: task.assignee_user_id,
+    assignee_name: task.assignee_name ?? '',
+    due_at: toDateInputValue(task.due_at),
+  };
+}
 
 function toRoadmapDraft(roadmap: TaskRoadmap): RoadmapDraftStep[] {
   return roadmap.steps.map((step) => ({
@@ -1438,7 +1451,8 @@ type TaskDetailScreenProps = {
   task: TeamTask;
   members: TeamMemberSummary[];
   onBack: () => void;
-  onSaveTask: (taskId: string, input: TaskUpdateInput) => Promise<void>;
+  onSaveTask: (taskId: string, input: TaskUpdateInput) => Promise<TeamTask>;
+  onSaveRoadmap: (taskId: string, input: RoadmapSaveInput) => Promise<TeamTask>;
   onDeleteTask: (taskId: string) => Promise<void>;
   onGenerateRoadmap: (taskId: string, reopen?: boolean) => Promise<void>;
   onLogout: () => void;
@@ -1451,21 +1465,12 @@ function TaskDetailScreen({
   members,
   onBack,
   onSaveTask,
+  onSaveRoadmap,
   onDeleteTask,
   onGenerateRoadmap,
   onLogout,
 }: TaskDetailScreenProps) {
-  const initialTaskDraft = useMemo(
-    () => ({
-      title: task.title,
-      body: task.body,
-      status: task.status,
-      assignee_user_id: task.assignee_user_id,
-      assignee_name: task.assignee_name ?? '',
-      due_at: toDateInputValue(task.due_at),
-    }),
-    [task],
-  );
+  const initialTaskDraft = useMemo(() => toTaskDraft(task), [task]);
   const initialRoadmapDraft = useMemo(
     () => toRoadmapDraft(task.roadmap),
     [task.roadmap],
@@ -1473,9 +1478,11 @@ function TaskDetailScreen({
   const [draft, setDraft] = useState(initialTaskDraft);
   const [roadmapDraft, setRoadmapDraft] = useState(initialRoadmapDraft);
   const [memberQuery, setMemberQuery] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
+  const [isSavingTask, setIsSavingTask] = useState(false);
+  const [isSavingRoadmap, setIsSavingRoadmap] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
+  const [roadmapError, setRoadmapError] = useState<string | null>(null);
   const [roadmapAction, setRoadmapAction] = useState<string | null>(null);
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [stepDraft, setStepDraft] = useState({ title: '', description: '' });
@@ -1498,10 +1505,13 @@ function TaskDetailScreen({
       stepDraft.description !== editingRoadmapStep.description);
   const isNewStepInputDirty =
     newStepDraft.title.length > 0 || newStepDraft.description.length > 0;
-  const hasPersistableChanges = isTaskDirty || isRoadmapDirty;
-  const hasUnsavedChanges =
-    hasPersistableChanges || isStepEditorDirty || isNewStepInputDirty;
-  const isFormLocked = isSaving || isRoadmapLocked;
+  const hasRoadmapUnsavedChanges =
+    isRoadmapDirty || isStepEditorDirty || isNewStepInputDirty;
+  const hasUnsavedChanges = isTaskDirty || hasRoadmapUnsavedChanges;
+  const isTaskFormLocked =
+    isSavingTask || isSavingRoadmap || isRoadmapLocked;
+  const isRoadmapFormLocked =
+    isSavingTask || isSavingRoadmap || isRoadmapLocked;
   const completedSteps = roadmapDraft.filter((step) => step.status === 'done').length;
   const filteredMembers = useMemo(() => {
     const query = memberQuery.trim().toLowerCase();
@@ -1521,8 +1531,25 @@ function TaskDetailScreen({
     setEditingStepId(null);
     setStepDraft({ title: '', description: '' });
     setNewStepDraft({ title: '', description: '' });
-    setError(null);
-  }, [initialRoadmapDraft, initialTaskDraft]);
+    setTaskError(null);
+    setRoadmapError(null);
+  }, [task.id]);
+
+  useEffect(() => {
+    if (isTaskDirty || isSavingTask) return;
+    setDraft(initialTaskDraft);
+    setMemberQuery('');
+    setTaskError(null);
+  }, [initialTaskDraft]);
+
+  useEffect(() => {
+    if (hasRoadmapUnsavedChanges || isSavingRoadmap) return;
+    setRoadmapDraft(initialRoadmapDraft);
+    setEditingStepId(null);
+    setStepDraft({ title: '', description: '' });
+    setNewStepDraft({ title: '', description: '' });
+    setRoadmapError(null);
+  }, [initialRoadmapDraft]);
 
   useEffect(() => {
     if (!hasUnsavedChanges) return;
@@ -1534,10 +1561,8 @@ function TaskDetailScreen({
     return () => window.removeEventListener('beforeunload', preventUnload);
   }, [hasUnsavedChanges]);
 
-  const discardUnsavedChanges = () => {
-    setDraft(initialTaskDraft);
+  const discardRoadmapChanges = () => {
     setRoadmapDraft(initialRoadmapDraft);
-    setMemberQuery('');
     setEditingStepId(null);
     setStepDraft({ title: '', description: '' });
     setNewStepDraft({ title: '', description: '' });
@@ -1545,19 +1570,21 @@ function TaskDetailScreen({
 
   const runRoadmapAction = async (actionId: string, action: () => Promise<void>) => {
     if (
-      hasUnsavedChanges &&
+      hasRoadmapUnsavedChanges &&
       !window.confirm('未保存の変更を破棄して、ロードマップを再生成しますか？')
     ) {
       return;
     }
-    if (hasUnsavedChanges) discardUnsavedChanges();
+    if (hasRoadmapUnsavedChanges) discardRoadmapChanges();
 
-    setError(null);
+    setRoadmapError(null);
     setRoadmapAction(actionId);
     try {
       await action();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'ロードマップの更新に失敗しました。');
+      setRoadmapError(
+        err instanceof Error ? err.message : 'ロードマップの更新に失敗しました。',
+      );
     } finally {
       setRoadmapAction(null);
     }
@@ -1580,7 +1607,7 @@ function TaskDetailScreen({
 
   const handleCreateStep = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (isFormLocked) return;
+    if (isRoadmapFormLocked) return;
     if (!newStepDraft.title.trim() || !newStepDraft.description.trim()) return;
 
     setRoadmapDraft((current) => [
@@ -1596,7 +1623,7 @@ function TaskDetailScreen({
   };
 
   const handleSaveStep = (clientId: string) => {
-    if (isFormLocked) return;
+    if (isRoadmapFormLocked) return;
     if (!stepDraft.title.trim() || !stepDraft.description.trim()) return;
 
     setRoadmapDraft((current) =>
@@ -1614,14 +1641,14 @@ function TaskDetailScreen({
   };
 
   const handleStepStatus = (clientId: string, status: TaskStatus) => {
-    if (isFormLocked) return;
+    if (isRoadmapFormLocked) return;
     setRoadmapDraft((current) =>
       current.map((step) => (step.clientId === clientId ? { ...step, status } : step)),
     );
   };
 
   const handleMoveStep = (stepIndex: number, direction: -1 | 1) => {
-    if (isFormLocked) return;
+    if (isRoadmapFormLocked) return;
     const nextIndex = stepIndex + direction;
     if (nextIndex < 0 || nextIndex >= roadmapDraft.length) return;
     setRoadmapDraft((current) => {
@@ -1635,7 +1662,7 @@ function TaskDetailScreen({
   };
 
   const handleDeleteStep = (step: RoadmapDraftStep) => {
-    if (isFormLocked) return;
+    if (isRoadmapFormLocked) return;
     if (!window.confirm(`「${step.title}」を削除しますか？`)) return;
     setRoadmapDraft((current) =>
       current.filter((candidate) => candidate.clientId !== step.clientId),
@@ -1643,13 +1670,20 @@ function TaskDetailScreen({
     if (editingStepId === step.clientId) setEditingStepId(null);
   };
 
-  const canSave =
-    hasPersistableChanges &&
+  const canSaveTask =
+    isTaskDirty &&
     draft.title.trim().length > 0 &&
     draft.body.trim().length > 0 &&
+    !isSavingTask &&
+    !isSavingRoadmap &&
+    !isRoadmapLocked;
+  const canSaveRoadmap =
+    isRoadmapDirty &&
     editingStepId === null &&
     !isNewStepInputDirty &&
-    !isSaving &&
+    !isTaskDirty &&
+    !isSavingTask &&
+    !isSavingRoadmap &&
     !isRoadmapLocked;
 
   const handleSelectMember = (member: TeamMemberSummary | null) => {
@@ -1662,48 +1696,87 @@ function TaskDetailScreen({
 
   const handleSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canSave) return;
+    if (!canSaveTask) return;
 
-    setError(null);
-    setIsSaving(true);
+    const taskChangesRoadmap =
+      draft.title !== initialTaskDraft.title ||
+      draft.body !== initialTaskDraft.body ||
+      draft.status !== initialTaskDraft.status;
+    const discardRoadmapBeforeSave =
+      taskChangesRoadmap && hasRoadmapUnsavedChanges;
+    if (
+      discardRoadmapBeforeSave &&
+      !window.confirm(
+        'タスク内容または状態の保存によりロードマップが更新されます。未保存のロードマップ変更を破棄しますか？',
+      )
+    ) {
+      return;
+    }
+    if (discardRoadmapBeforeSave) discardRoadmapChanges();
+
+    setTaskError(null);
+    setIsSavingTask(true);
     try {
       const input: TaskUpdateInput = {};
-      if (isTaskDirty) {
-        if (draft.title !== initialTaskDraft.title) {
-          input.title = draft.title.trim();
-        }
-        if (draft.body !== initialTaskDraft.body) {
-          input.body = draft.body.trim();
-        }
-        if (draft.status !== initialTaskDraft.status) {
-          input.status = draft.status;
-        }
-        if (draft.assignee_user_id !== initialTaskDraft.assignee_user_id) {
-          input.assignee_user_id = draft.assignee_user_id;
-          input.assignee_name = draft.assignee_user_id
-            ? draft.assignee_name.trim() || null
-            : null;
-        }
-        if (draft.due_at !== initialTaskDraft.due_at) {
-          input.due_at = toDatePayload(draft.due_at);
-        }
+      if (draft.title !== initialTaskDraft.title) {
+        input.title = draft.title.trim();
       }
-      if (isRoadmapDirty) {
-        input.roadmap = {
-          expected_version: task.roadmap.version,
-          steps: roadmapDraft.map(({ id, title, description, status }) => ({
-            ...(id ? { id } : {}),
-            title,
-            description,
-            status,
-          })),
-        };
+      if (draft.body !== initialTaskDraft.body) {
+        input.body = draft.body.trim();
       }
-      await onSaveTask(task.id, input);
+      if (draft.status !== initialTaskDraft.status) {
+        input.status = draft.status;
+      }
+      if (draft.assignee_user_id !== initialTaskDraft.assignee_user_id) {
+        input.assignee_user_id = draft.assignee_user_id;
+        input.assignee_name = draft.assignee_user_id
+          ? draft.assignee_name.trim() || null
+          : null;
+      }
+      if (draft.due_at !== initialTaskDraft.due_at) {
+        input.due_at = toDatePayload(draft.due_at);
+      }
+      const updatedTask = await onSaveTask(task.id, input);
+      setDraft(toTaskDraft(updatedTask));
+      setMemberQuery('');
+      if (discardRoadmapBeforeSave || !hasRoadmapUnsavedChanges) {
+        setRoadmapDraft(toRoadmapDraft(updatedTask.roadmap));
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '変更の保存に失敗しました。');
+      setTaskError(err instanceof Error ? err.message : 'タスクの保存に失敗しました。');
     } finally {
-      setIsSaving(false);
+      setIsSavingTask(false);
+    }
+  };
+
+  const handleSaveRoadmap = async () => {
+    if (!canSaveRoadmap) return;
+
+    setRoadmapError(null);
+    setIsSavingRoadmap(true);
+    try {
+      const updatedTask = await onSaveRoadmap(task.id, {
+        expected_version: task.roadmap.version,
+        steps: roadmapDraft.map(({ id, title, description, status }) => ({
+          ...(id ? { id } : {}),
+          title,
+          description,
+          status,
+        })),
+      });
+      setRoadmapDraft(toRoadmapDraft(updatedTask.roadmap));
+      setEditingStepId(null);
+      setStepDraft({ title: '', description: '' });
+      setNewStepDraft({ title: '', description: '' });
+      if (!isTaskDirty) {
+        setDraft(toTaskDraft(updatedTask));
+      }
+    } catch (err) {
+      setRoadmapError(
+        err instanceof Error ? err.message : 'ロードマップの保存に失敗しました。',
+      );
+    } finally {
+      setIsSavingRoadmap(false);
     }
   };
 
@@ -1712,12 +1785,12 @@ function TaskDetailScreen({
     const confirmed = window.confirm('このタスクを削除しますか？');
     if (!confirmed) return;
 
-    setError(null);
+    setTaskError(null);
     setIsDeleting(true);
     try {
       await onDeleteTask(task.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'タスクの削除に失敗しました。');
+      setTaskError(err instanceof Error ? err.message : 'タスクの削除に失敗しました。');
       setIsDeleting(false);
     }
   };
@@ -1754,7 +1827,7 @@ function TaskDetailScreen({
             <label className={draft.title !== initialTaskDraft.title ? 'task-field dirty' : 'task-field'}>
               <span>タイトル</span>
               <input
-                disabled={isFormLocked}
+                disabled={isTaskFormLocked}
                 value={draft.title}
                 onChange={(event) =>
                   setDraft((currentDraft) => ({ ...currentDraft, title: event.target.value }))
@@ -1765,7 +1838,7 @@ function TaskDetailScreen({
             <label className={draft.status !== initialTaskDraft.status ? 'task-field dirty' : 'task-field'}>
               <span>ステータス</span>
               <select
-                disabled={isFormLocked}
+                disabled={isTaskFormLocked}
                 value={draft.status}
                 onChange={(event) =>
                   setDraft((currentDraft) => ({
@@ -1785,7 +1858,7 @@ function TaskDetailScreen({
             <label className={draft.due_at !== initialTaskDraft.due_at ? 'task-field dirty' : 'task-field'}>
               <span>期限</span>
               <input
-                disabled={isFormLocked}
+                disabled={isTaskFormLocked}
                 type="date"
                 value={draft.due_at}
                 onChange={(event) =>
@@ -1798,7 +1871,7 @@ function TaskDetailScreen({
           <label className={draft.body !== initialTaskDraft.body ? 'task-field dirty' : 'task-field'}>
             <span>本文</span>
             <textarea
-              disabled={isFormLocked}
+              disabled={isTaskFormLocked}
               value={draft.body}
               onChange={(event) =>
                 setDraft((currentDraft) => ({ ...currentDraft, body: event.target.value }))
@@ -1819,7 +1892,7 @@ function TaskDetailScreen({
                 <strong>{draft.assignee_name || '未担当'}</strong>
               </div>
               <input
-                disabled={isFormLocked}
+                disabled={isTaskFormLocked}
                 value={memberQuery}
                 onChange={(event) => setMemberQuery(event.target.value)}
                 placeholder="メンバー名またはメールで検索"
@@ -1828,7 +1901,7 @@ function TaskDetailScreen({
             <div className="assignee-options">
               <button
                 className={!draft.assignee_user_id ? 'assignee-option active' : 'assignee-option'}
-                disabled={isFormLocked}
+                disabled={isTaskFormLocked}
                 type="button"
                 onClick={() => handleSelectMember(null)}
               >
@@ -1843,7 +1916,7 @@ function TaskDetailScreen({
                       : 'assignee-option'
                   }
                   key={member.user_id}
-                  disabled={isFormLocked}
+                  disabled={isTaskFormLocked}
                   type="button"
                   onClick={() => handleSelectMember(member)}
                 >
@@ -1854,25 +1927,25 @@ function TaskDetailScreen({
             </div>
           </section>
 
-          {error && <p className="error-text">{error}</p>}
+          {taskError && <p className="error-text">{taskError}</p>}
 
           <div className="task-detail-actions">
             <button
               className="danger-button"
               type="button"
               onClick={() => void handleDelete()}
-              disabled={isDeleting || isFormLocked}
+              disabled={isDeleting || isTaskFormLocked}
             >
               {isDeleting ? <Loader2 className="spin" size={18} /> : <Trash2 size={18} />}
               {isDeleting ? '削除中' : 'タスクを削除'}
             </button>
             <div>
-              {hasUnsavedChanges && (
-                <span className="dirty-indicator">未保存の変更があります</span>
+              {isTaskDirty && (
+                <span className="dirty-indicator">タスクに未保存の変更があります</span>
               )}
-              <button className="primary-button" type="submit" disabled={!canSave}>
-                {isSaving ? <Loader2 className="spin" size={18} /> : <Save size={18} />}
-                {isSaving ? '保存中' : '変更を保存'}
+              <button className="primary-button" type="submit" disabled={!canSaveTask}>
+                {isSavingTask ? <Loader2 className="spin" size={18} /> : <Save size={18} />}
+                {isSavingTask ? '保存中' : 'タスクを保存'}
               </button>
             </div>
           </div>
@@ -1923,7 +1996,9 @@ function TaskDetailScreen({
               {task.roadmap.generation_status === 'ready' && task.status !== 'done' && (
                 <button
                   className="quiet-button"
-                  disabled={roadmapAction !== null || isSaving}
+                  disabled={
+                    roadmapAction !== null || isSavingTask || isSavingRoadmap
+                  }
                   type="button"
                   onClick={() =>
                     void runRoadmapAction('regenerate', () =>
@@ -1949,7 +2024,7 @@ function TaskDetailScreen({
               </div>
               <button
                 className="secondary-button"
-                disabled={roadmapAction !== null || isSaving}
+                disabled={roadmapAction !== null || isSavingTask || isSavingRoadmap}
                 type="button"
                 onClick={() =>
                   void runRoadmapAction('regenerate', () =>
@@ -1984,7 +2059,7 @@ function TaskDetailScreen({
               </div>
               <button
                 className="secondary-button"
-                disabled={roadmapAction !== null || isSaving}
+                disabled={roadmapAction !== null || isSavingTask || isSavingRoadmap}
                 type="button"
                 onClick={() =>
                   void runRoadmapAction('retry', () => onGenerateRoadmap(task.id))
@@ -2006,7 +2081,7 @@ function TaskDetailScreen({
                       <div className="roadmap-step-editor">
                         <input
                           aria-label="ステップ名"
-                          disabled={isFormLocked}
+                          disabled={isRoadmapFormLocked}
                           maxLength={255}
                           value={stepDraft.title}
                           onChange={(event) =>
@@ -2018,7 +2093,7 @@ function TaskDetailScreen({
                         />
                         <textarea
                           aria-label="ステップの説明"
-                          disabled={isFormLocked}
+                          disabled={isRoadmapFormLocked}
                           rows={3}
                           value={stepDraft.description}
                           onChange={(event) =>
@@ -2032,7 +2107,7 @@ function TaskDetailScreen({
                           <button
                             className="primary-button"
                             disabled={
-                              isFormLocked ||
+                              isRoadmapFormLocked ||
                               !stepDraft.title.trim() ||
                               !stepDraft.description.trim()
                             }
@@ -2044,7 +2119,7 @@ function TaskDetailScreen({
                           </button>
                           <button
                             className="quiet-button"
-                            disabled={isFormLocked}
+                            disabled={isRoadmapFormLocked}
                             type="button"
                             onClick={() => setEditingStepId(null)}
                           >
@@ -2058,7 +2133,7 @@ function TaskDetailScreen({
                           <h3>{step.title}</h3>
                           <select
                             aria-label={`${step.title}の状態`}
-                            disabled={isFormLocked}
+                            disabled={isRoadmapFormLocked}
                             value={step.status}
                             onChange={(event) =>
                               handleStepStatus(
@@ -2076,7 +2151,7 @@ function TaskDetailScreen({
                         <div className="roadmap-step-actions">
                           <button
                             className="quiet-button"
-                            disabled={isFormLocked}
+                            disabled={isRoadmapFormLocked}
                             type="button"
                             onClick={() => beginStepEdit(step)}
                           >
@@ -2085,7 +2160,7 @@ function TaskDetailScreen({
                           <button
                             aria-label="一つ上へ"
                             className="icon-button"
-                            disabled={index === 0 || isFormLocked}
+                            disabled={index === 0 || isRoadmapFormLocked}
                             type="button"
                             onClick={() => handleMoveStep(index, -1)}
                           >
@@ -2095,7 +2170,8 @@ function TaskDetailScreen({
                             aria-label="一つ下へ"
                             className="icon-button"
                             disabled={
-                              index === roadmapDraft.length - 1 || isFormLocked
+                              index === roadmapDraft.length - 1 ||
+                              isRoadmapFormLocked
                             }
                             type="button"
                             onClick={() => handleMoveStep(index, 1)}
@@ -2104,7 +2180,7 @@ function TaskDetailScreen({
                           </button>
                           <button
                             className="danger-link"
-                            disabled={isFormLocked}
+                            disabled={isRoadmapFormLocked}
                             type="button"
                             onClick={() => handleDeleteStep(step)}
                           >
@@ -2132,7 +2208,7 @@ function TaskDetailScreen({
             </div>
             <input
               aria-label="新しいステップ名"
-              disabled={isFormLocked}
+              disabled={isRoadmapFormLocked}
               maxLength={255}
               placeholder="ステップ名"
               value={newStepDraft.title}
@@ -2142,7 +2218,7 @@ function TaskDetailScreen({
             />
             <textarea
               aria-label="新しいステップの説明"
-              disabled={isFormLocked}
+              disabled={isRoadmapFormLocked}
               placeholder="完了条件が分かる説明"
               rows={3}
               value={newStepDraft.description}
@@ -2156,7 +2232,7 @@ function TaskDetailScreen({
             <button
               className="secondary-button"
               disabled={
-                isFormLocked ||
+                isRoadmapFormLocked ||
                 !newStepDraft.title.trim() ||
                 !newStepDraft.description.trim()
               }
@@ -2166,6 +2242,31 @@ function TaskDetailScreen({
               追加
             </button>
           </form>
+
+          {roadmapError && <p className="error-text">{roadmapError}</p>}
+
+          <div className="roadmap-save-actions">
+            {hasRoadmapUnsavedChanges && (
+              <span className="dirty-indicator">
+                {isTaskDirty
+                  ? '先にタスクの変更を保存してください'
+                  : 'ロードマップに未保存の変更があります'}
+              </span>
+            )}
+            <button
+              className="primary-button"
+              disabled={!canSaveRoadmap}
+              type="button"
+              onClick={() => void handleSaveRoadmap()}
+            >
+              {isSavingRoadmap ? (
+                <Loader2 className="spin" size={18} />
+              ) : (
+                <Save size={18} />
+              )}
+              {isSavingRoadmap ? '保存中' : 'ロードマップを保存'}
+            </button>
+          </div>
         </section>
       </section>
 
@@ -3122,8 +3223,9 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const handleSaveTask = async (taskId: string, input: TaskUpdateInput) => {
     setTaskError(null);
     const updatedTask = await updateTask(currentUser, taskId, input);
+    const nextTask = withRoadmap(updatedTask);
     setTasks((currentTasks) =>
-      currentTasks.map((task) => (task.id === taskId ? withRoadmap(updatedTask) : task)),
+      currentTasks.map((task) => (task.id === taskId ? nextTask : task)),
     );
     if (
       updatedTask.status !== 'done' &&
@@ -3138,6 +3240,18 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         );
       });
     }
+    return nextTask;
+  };
+
+  const handleSaveRoadmap = async (taskId: string, input: RoadmapSaveInput) => {
+    setTaskError(null);
+    const nextTask = withRoadmap(
+      await saveTaskRoadmap(currentUser, taskId, input),
+    );
+    setTasks((currentTasks) =>
+      currentTasks.map((task) => (task.id === taskId ? nextTask : task)),
+    );
+    return nextTask;
   };
 
   const roadmapVersion = (taskId: string) =>
@@ -3203,6 +3317,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         members={teamMembers}
         onBack={() => navigateTo({ kind: 'teamTasks', teamId: selectedTeam.team_id })}
         onSaveTask={handleSaveTask}
+        onSaveRoadmap={handleSaveRoadmap}
         onDeleteTask={handleDeleteTask}
         onGenerateRoadmap={handleGenerateRoadmap}
         onLogout={handleLogout}

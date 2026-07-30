@@ -94,6 +94,17 @@ def make_step(
     return step
 
 
+def make_api_session(task: Task) -> MagicMock:
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    return session
+
+
 class RoadmapMergeTests(unittest.TestCase):
     def test_preserves_user_work_and_replaces_only_untouched_ai_steps(self) -> None:
         task = make_task()
@@ -200,9 +211,7 @@ class RoadmapStepApiTests(unittest.IsolatedAsyncioTestCase):
         task = make_task(status="in_progress")
         first = make_step(task.roadmap, title="作業1", position=0, status="done")
         last = make_step(task.roadmap, title="作業2", position=1, status="in_progress")
-        session = MagicMock()
-        session.commit = AsyncMock()
-        session.refresh = AsyncMock()
+        session = make_api_session(task)
 
         with patch(
             "app.api.tasks._get_accessible_task",
@@ -224,9 +233,7 @@ class RoadmapStepApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_reopening_step_reopens_completed_task(self) -> None:
         task = make_task(status="done")
         step = make_step(task.roadmap, title="追加確認", position=0, status="done")
-        session = MagicMock()
-        session.commit = AsyncMock()
-        session.refresh = AsyncMock()
+        session = make_api_session(task)
 
         with patch(
             "app.api.tasks._get_accessible_task",
@@ -253,10 +260,7 @@ class RoadmapSaveApiTests(unittest.IsolatedAsyncioTestCase):
         task = make_task(status="in_progress")
         removed = make_step(task.roadmap, title="削除する作業", position=0)
         retained = make_step(task.roadmap, title="残す作業", position=1)
-        session = MagicMock()
-        session.flush = AsyncMock()
-        session.commit = AsyncMock()
-        session.refresh = AsyncMock()
+        session = make_api_session(task)
 
         request = RoadmapSaveRequest(
             expected_version=task.roadmap.version,
@@ -312,10 +316,7 @@ class RoadmapSaveApiTests(unittest.IsolatedAsyncioTestCase):
         task = make_task(status="in_progress")
         first = make_step(task.roadmap, title="作業1", position=0)
         second = make_step(task.roadmap, title="作業2", position=1)
-        session = MagicMock()
-        session.flush = AsyncMock()
-        session.commit = AsyncMock()
-        session.refresh = AsyncMock()
+        session = make_api_session(task)
 
         with patch(
             "app.api.tasks._get_accessible_task",
@@ -345,10 +346,7 @@ class RoadmapSaveApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_done_step_reopens_completed_task(self) -> None:
         task = make_task(status="done")
         step = make_step(task.roadmap, title="再確認", position=0, status="done")
-        session = MagicMock()
-        session.flush = AsyncMock()
-        session.commit = AsyncMock()
-        session.refresh = AsyncMock()
+        session = make_api_session(task)
 
         with patch(
             "app.api.tasks._get_accessible_task",
@@ -377,10 +375,7 @@ class RoadmapSaveApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_stale_version_before_mutating_steps(self) -> None:
         task = make_task(status="in_progress")
         step = make_step(task.roadmap, title="変更しない", position=0)
-        session = MagicMock()
-        session.flush = AsyncMock()
-        session.commit = AsyncMock()
-        session.refresh = AsyncMock()
+        session = make_api_session(task)
 
         with (
             patch(
@@ -412,14 +407,11 @@ class RoadmapSaveApiTests(unittest.IsolatedAsyncioTestCase):
         session.flush.assert_not_awaited()
         session.commit.assert_not_awaited()
 
-    async def test_task_and_roadmap_are_saved_in_one_commit(self) -> None:
+    async def test_task_update_does_not_mutate_roadmap(self) -> None:
         task = make_task(status="in_progress")
         step = make_step(task.roadmap, title="更新前", position=0)
         next_due_at = datetime.now(timezone.utc) + timedelta(days=1)
-        session = MagicMock()
-        session.flush = AsyncMock()
-        session.commit = AsyncMock()
-        session.refresh = AsyncMock()
+        session = make_api_session(task)
 
         with (
             patch(
@@ -435,28 +427,15 @@ class RoadmapSaveApiTests(unittest.IsolatedAsyncioTestCase):
         ):
             await update_task(
                 task_id=task.id,
-                request=TaskUpdateRequest(
-                    due_at=next_due_at,
-                    roadmap=RoadmapSaveRequest(
-                        expected_version=task.roadmap.version,
-                        steps=[
-                            RoadmapStepSaveRequest(
-                                id=step.id,
-                                title="更新後",
-                                description="更新後の説明",
-                                status="in_progress",
-                            )
-                        ],
-                    ),
-                ),
+                request=TaskUpdateRequest(due_at=next_due_at),
                 auth_user=SimpleNamespace(),
                 session=session,
             )
 
         self.assertEqual(task.due_at, next_due_at)
-        self.assertEqual(step.title, "更新後")
-        self.assertEqual(step.status, "in_progress")
-        self.assertEqual(task.roadmap.version, 2)
+        self.assertEqual(step.title, "更新前")
+        self.assertEqual(step.status, "todo")
+        self.assertEqual(task.roadmap.version, 1)
         session.commit.assert_awaited_once()
 
 

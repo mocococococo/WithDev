@@ -56,7 +56,6 @@ export type TaskUpdateInput = {
   assignee_name?: string | null;
   status?: TaskStatus;
   due_at?: string | null;
-  roadmap?: RoadmapSaveInput;
 };
 
 export type RoadmapSaveStepInput = {

@@ -13,12 +13,14 @@ import app.models  # noqa: F401 - register every model referenced by foreign key
 from app.api.tasks import (
     RoadmapGenerateRequest,
     _claim_task_roadmap_generation,
+    _commit_and_reload_task,
     _finish_task_roadmap_generation_failed,
     _finish_task_roadmap_generation_ready,
+    _task_body,
     run_task_roadmap_generation,
 )
 from app.db.base import Base
-from app.models.task import Task, TaskRoadmap
+from app.models.task import Task, TaskRoadmap, TaskRoadmapStep
 from app.models.team import Team
 from app.services.task_roadmap_service import TaskRoadmapGenerationError
 
@@ -118,6 +120,41 @@ class RoadmapPostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(roadmap.overview, generated["overview"])
         self.assertEqual(len(roadmap.steps), 1)
         self.assertEqual(roadmap.steps[0].title, "変更を確認する")
+
+    async def test_commit_reload_keeps_roadmap_steps_available_for_response(self) -> None:
+        task_id = await self._create_pending_task()
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(TaskRoadmap).where(TaskRoadmap.task_id == task_id)
+            )
+            roadmap = result.scalar_one()
+            roadmap.generation_status = "ready"
+            roadmap.steps.append(
+                TaskRoadmapStep(
+                    title="保存確認",
+                    description="更新後のレスポンスに含まれる。",
+                    status="todo",
+                    position=0,
+                    source="ai",
+                    user_edited=False,
+                    is_deleted=False,
+                )
+            )
+            await session.commit()
+
+        async with self.sessions() as session:
+            result = await session.execute(select(Task).where(Task.id == task_id))
+            task = result.scalar_one()
+            task.due_at = datetime.now(timezone.utc)
+            reloaded = await _commit_and_reload_task(
+                session=session,
+                task=task,
+            )
+            body = _task_body(reloaded)
+
+        self.assertEqual(body.id, task_id)
+        self.assertIsNotNone(body.roadmap)
+        self.assertEqual([step.title for step in body.roadmap.steps], ["保存確認"])
 
     async def test_ai_wait_does_not_keep_the_claim_transaction_open(self) -> None:
         task_id = await self._create_pending_task()

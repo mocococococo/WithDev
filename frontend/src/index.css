@@ -1149,6 +1149,15 @@ h2 {
   justify-self: start;
 }
 
+.roadmap-save-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  border-top: 1px solid #e4e7ec;
+  padding-top: 16px;
+}
+
 .icon-button,
 .danger-link {
   display: inline-flex;
@@ -1574,6 +1583,16 @@ h2 {
   .task-detail-header,
   .roadmap-panel-header,
   .roadmap-step-title {
+    flex-direction: column;
+  }
+
+  .roadmap-save-actions,
+  .roadmap-save-actions .primary-button {
+    width: 100%;
+  }
+
+  .roadmap-save-actions {
+    align-items: stretch;
     flex-direction: column;
   }
 

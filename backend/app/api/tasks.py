@@ -167,7 +167,6 @@ class TaskUpdateRequest(BaseModel):
     assignee_name: str | None = None
     status: str | None = None
     due_at: datetime | None = None
-    roadmap: RoadmapSaveRequest | None = None
 
 
 class RoadmapStepCreateRequest(BaseModel):
@@ -325,8 +324,7 @@ async def create_team_task(
         has_source_updates=False,
     )
     session.add(task)
-    await session.commit()
-    await session.refresh(task)
+    task = await _commit_and_reload_task(session=session, task=task)
     return TaskResponse(task=_task_body(task))
 
 
@@ -529,28 +527,11 @@ async def update_task(
         payload = request.model_dump(exclude_unset=True)
     else:
         payload = request.dict(exclude_unset=True)
-    roadmap_request = request.roadmap
-    payload.pop("roadmap", None)
     previous_status = task.status
-    task_status_was_explicitly_completed = (
-        payload.get("status") is not None
-        and _validate_status(payload["status"]) == "done"
-    )
     source_changed = any(field in payload for field in ("title", "body"))
     _apply_task_patch(task=task, payload=payload, member_map=member_map)
 
-    if roadmap_request is not None:
-        await _apply_roadmap_save(
-            session=session,
-            roadmap=roadmap,
-            request=roadmap_request,
-        )
-
-    if task_status_was_explicitly_completed:
-        _complete_all_roadmap_steps(roadmap)
-    elif roadmap_request is not None:
-        _sync_task_after_roadmap_save(task, roadmap)
-    elif task.status == "done":
+    if task.status == "done":
         _complete_all_roadmap_steps(roadmap)
     elif previous_status == "done" and _active_roadmap_steps(roadmap):
         raise HTTPException(
@@ -564,8 +545,7 @@ async def update_task(
     elif source_changed:
         _mark_roadmap_pending(roadmap)
 
-    await session.commit()
-    await session.refresh(task)
+    task = await _commit_and_reload_task(session=session, task=task)
     return TaskResponse(task=_task_body(task))
 
 
@@ -644,8 +624,7 @@ async def create_roadmap_step(
     roadmap.has_source_updates = False
     if task.status == "done":
         task.status = "in_progress"
-    await session.commit()
-    await session.refresh(task)
+    task = await _commit_and_reload_task(session=session, task=task)
     return TaskResponse(task=_task_body(task))
 
 
@@ -697,8 +676,7 @@ async def update_roadmap_step(
 
     roadmap.version += 1
     _sync_task_completion_from_steps(task, roadmap)
-    await session.commit()
-    await session.refresh(task)
+    task = await _commit_and_reload_task(session=session, task=task)
     return TaskResponse(task=_task_body(task))
 
 
@@ -718,8 +696,7 @@ async def save_task_roadmap(
         request=request,
     )
     _sync_task_after_roadmap_save(task, roadmap)
-    await session.commit()
-    await session.refresh(task)
+    task = await _commit_and_reload_task(session=session, task=task)
     return TaskResponse(task=_task_body(task))
 
 
@@ -743,8 +720,7 @@ async def delete_roadmap_step(
     step.user_edited = True
     roadmap.version += 1
     _sync_task_completion_from_steps(task, roadmap)
-    await session.commit()
-    await session.refresh(task)
+    task = await _commit_and_reload_task(session=session, task=task)
     return TaskResponse(task=_task_body(task))
 
 
@@ -776,8 +752,7 @@ async def reorder_roadmap_steps(
     for offset, step in enumerate(deleted_steps, start=len(active_steps)):
         step.position = offset
     roadmap.version += 1
-    await session.commit()
-    await session.refresh(task)
+    task = await _commit_and_reload_task(session=session, task=task)
     return TaskResponse(task=_task_body(task))
 
 
@@ -1079,11 +1054,30 @@ async def _get_task_for_roadmap_generation(
         select(Task)
         .options(selectinload(Task.roadmap).selectinload(TaskRoadmap.steps))
         .where(Task.id == task_id, Task.is_deleted.is_(False))
+        .execution_options(populate_existing=True)
     )
     if for_update:
         statement = statement.with_for_update()
     result = await session.execute(statement)
     return result.scalar_one_or_none()
+
+
+async def _commit_and_reload_task(
+    *,
+    session: AsyncSession,
+    task: Task,
+) -> Task:
+    await session.commit()
+    reloaded_task = await _get_task_for_roadmap_generation(
+        session=session,
+        task_id=task.id,
+    )
+    if reloaded_task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="task not found",
+        )
+    return reloaded_task
 
 
 async def _get_task_related_minutes(

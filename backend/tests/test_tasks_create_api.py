@@ -23,15 +23,18 @@ class CreateTeamTaskTests(unittest.IsolatedAsyncioTestCase):
         get_members.return_value = [(assignee, "member")]
         session = MagicMock()
         session.commit = AsyncMock()
-        session.refresh = AsyncMock()
         now = datetime.now(timezone.utc)
 
-        async def refresh_task(task) -> None:
+        async def commit_task() -> None:
+            task = session.add.call_args.args[0]
             task.id = uuid4()
             task.created_at = now
             task.updated_at = now
 
-        session.refresh.side_effect = refresh_task
+        session.commit.side_effect = commit_task
+        result = MagicMock()
+        result.scalar_one_or_none.side_effect = lambda: session.add.call_args.args[0]
+        session.execute = AsyncMock(return_value=result)
 
         response = await create_team_task(
             team_id=team_id,
@@ -57,7 +60,7 @@ class CreateTeamTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created_task.status, "in_progress")
         self.assertEqual(response.task.id, created_task.id)
         session.commit.assert_awaited_once()
-        session.refresh.assert_awaited_once_with(created_task)
+        session.execute.assert_awaited_once()
 
     @patch("app.api.tasks.require_team_member", new_callable=AsyncMock)
     async def test_requires_title(self, require_member) -> None:
