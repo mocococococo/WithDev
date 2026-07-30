@@ -377,6 +377,17 @@ function formatDate(value: number | null) {
   }).format(new Date(value));
 }
 
+function formatFullDueDate(value: number | null) {
+  if (!value) return '期限なし';
+
+  const date = new Intl.DateTimeFormat('ja-JP', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(value));
+  return `〜${date}`;
+}
+
 function toDateInputValue(value: number | null) {
   if (!value) return '';
 
@@ -717,7 +728,7 @@ function TaskStatusBadge({ status }: { status: TaskStatus }) {
 
 function taskRoadmapProgress(task: TeamTask) {
   const totalSteps = task.roadmap.steps.length;
-  if (totalSteps === 0) return null;
+  if (totalSteps === 0) return task.status === 'done' ? 100 : 0;
 
   const completedSteps = task.roadmap.steps.filter((step) => step.status === 'done').length;
   return Math.round((completedSteps / totalSteps) * 100);
@@ -727,7 +738,9 @@ type TaskCardProps = {
   task: TeamTask;
   compact?: boolean;
   showAssignee?: boolean;
+  showFullDueDate?: boolean;
   showProgress?: boolean;
+  showSourceMinutesId?: boolean;
   onOpen: () => void;
 };
 
@@ -735,17 +748,19 @@ function TaskCard({
   task,
   compact = false,
   showAssignee = true,
+  showFullDueDate = false,
   showProgress = false,
+  showSourceMinutesId = true,
   onOpen,
 }: TaskCardProps) {
-  const hasMeta = showAssignee || task.source_minutes_id;
+  const hasMeta = showAssignee || (showSourceMinutesId && task.source_minutes_id);
   const progress = showProgress ? taskRoadmapProgress(task) : null;
 
   return (
     <button className={compact ? 'task-card compact' : 'task-card'} type="button" onClick={onOpen}>
       <div className="task-card-header">
         <TaskStatusBadge status={task.status} />
-        <span>{formatDate(task.due_at)}</span>
+        <span>{showFullDueDate ? formatFullDueDate(task.due_at) : formatDate(task.due_at)}</span>
       </div>
       <h3>{task.title}</h3>
       {progress !== null && (
@@ -769,7 +784,7 @@ function TaskCard({
       {hasMeta && (
         <div className="task-card-meta">
           {showAssignee && <span>{task.assignee_name ?? '未担当'}</span>}
-          {task.source_minutes_id && <span>{task.source_minutes_id}</span>}
+          {showSourceMinutesId && task.source_minutes_id && <span>{task.source_minutes_id}</span>}
         </div>
       )}
     </button>
@@ -1555,7 +1570,9 @@ function TeamTaskScreen({
                       key={task.id}
                       task={task}
                       showAssignee={false}
+                      showFullDueDate
                       showProgress
+                      showSourceMinutesId={false}
                       onOpen={() => onOpenTask(task.id)}
                     />
                   ))}
