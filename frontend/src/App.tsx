@@ -715,10 +715,19 @@ function TaskStatusBadge({ status }: { status: TaskStatus }) {
   return <span className={`task-status-badge ${status}`}>{taskStatusLabels[status]}</span>;
 }
 
+function taskRoadmapProgress(task: TeamTask) {
+  const totalSteps = task.roadmap.steps.length;
+  if (totalSteps === 0) return null;
+
+  const completedSteps = task.roadmap.steps.filter((step) => step.status === 'done').length;
+  return Math.round((completedSteps / totalSteps) * 100);
+}
+
 type TaskCardProps = {
   task: TeamTask;
   compact?: boolean;
   showAssignee?: boolean;
+  showProgress?: boolean;
   onOpen: () => void;
 };
 
@@ -726,9 +735,11 @@ function TaskCard({
   task,
   compact = false,
   showAssignee = true,
+  showProgress = false,
   onOpen,
 }: TaskCardProps) {
   const hasMeta = showAssignee || task.source_minutes_id;
+  const progress = showProgress ? taskRoadmapProgress(task) : null;
 
   return (
     <button className={compact ? 'task-card compact' : 'task-card'} type="button" onClick={onOpen}>
@@ -737,6 +748,24 @@ function TaskCard({
         <span>{formatDate(task.due_at)}</span>
       </div>
       <h3>{task.title}</h3>
+      {progress !== null && (
+        <div className="task-card-progress">
+          <div className="task-card-progress-label">
+            <span>進捗</span>
+            <strong>{progress}%</strong>
+          </div>
+          <span
+            className="task-card-progress-bar"
+            role="progressbar"
+            aria-label={`${task.title}の進捗`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progress}
+          >
+            <span style={{ width: `${progress}%` }} />
+          </span>
+        </div>
+      )}
       {hasMeta && (
         <div className="task-card-meta">
           {showAssignee && <span>{task.assignee_name ?? '未担当'}</span>}
@@ -1526,6 +1555,7 @@ function TeamTaskScreen({
                       key={task.id}
                       task={task}
                       showAssignee={false}
+                      showProgress
                       onOpen={() => onOpenTask(task.id)}
                     />
                   ))}
