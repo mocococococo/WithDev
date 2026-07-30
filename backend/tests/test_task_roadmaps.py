@@ -697,27 +697,37 @@ class RoadmapGenerationLeaseTests(unittest.TestCase):
 
 
 class RoadmapResponseParsingTests(unittest.TestCase):
-    def test_accepts_valid_one_to_eight_step_response(self) -> None:
+    def test_accepts_valid_three_to_six_step_response(self) -> None:
         payload = {
             "overview": "リリースまでの確認を進める。",
             "steps": [
                 {
                     "existing_step_id": None,
-                    "title": "確認",
-                    "description": "結果を記録する。",
+                    "title": f"確認{index}",
+                    "description": f"確認{index}の結果を記録する。",
                 }
+                for index in range(1, 4)
             ],
         }
 
         parsed = parse_task_roadmap(json.dumps(payload, ensure_ascii=False))
 
-        self.assertEqual(len(parsed["steps"]), 1)
+        self.assertEqual(len(parsed["steps"]), 3)
         self.assertIsNone(parsed["steps"][0]["existing_step_id"])
 
-    def test_rejects_response_without_steps(self) -> None:
+    def test_rejects_response_with_fewer_than_three_steps(self) -> None:
         payload = {
             "overview": "不足",
-            "steps": [],
+            "steps": [
+                {
+                    "title": "確認",
+                    "description": "確認結果を記録する。",
+                },
+                {
+                    "title": "実行",
+                    "description": "実行結果を記録する。",
+                },
+            ],
         }
 
         with self.assertRaises(TaskRoadmapGenerationError):
@@ -744,9 +754,17 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
                     "overview": "契約書を送付する。",
                     "steps": [
                         {
+                            "title": "契約書の確定版を確認する",
+                            "description": "送付対象の確定版が特定できている。",
+                        },
+                        {
+                            "title": "送付メールを作成する",
+                            "description": "宛先と添付ファイルを設定したメールが作成されている。",
+                        },
+                        {
                             "title": "契約書を送付する",
                             "description": "担当者へのメール送信が完了している。",
-                        }
+                        },
                     ],
                 },
                 ensure_ascii=False,
@@ -780,11 +798,11 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
         self.assertIsNone(generation_config.candidate_count)
         self.assertIsNone(generation_config.temperature)
         self.assertEqual(generation_config.response_mime_type, "application/json")
-        self.assertEqual(steps_schema["min_items"], 1)
-        self.assertEqual(steps_schema["max_items"], 8)
+        self.assertEqual(steps_schema["min_items"], 3)
+        self.assertEqual(steps_schema["max_items"], 6)
         self.assertIsNone(request_options.retry)
         self.assertEqual(request_options.timeout, GEMINI_REQUEST_TIMEOUT_SECONDS)
-        self.assertEqual(len(generated["steps"]), 1)
+        self.assertEqual(len(generated["steps"]), 3)
 
     def test_raises_quota_error_without_second_ai_call(self) -> None:
         model = MagicMock()
@@ -880,9 +898,10 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
                     "overview": "議事録に沿って進める。",
                     "steps": [
                         {
-                            "title": "対応する",
-                            "description": "対応結果を確認する。",
+                            "title": f"対応する{index}",
+                            "description": f"対応{index}の結果を確認する。",
                         }
+                        for index in range(1, 4)
                     ],
                 },
                 ensure_ascii=False,

@@ -10,8 +10,8 @@ from google.api_core.exceptions import ResourceExhausted
 from app.core.config import get_settings
 
 
-MIN_ROADMAP_STEPS = 1
-MAX_ROADMAP_STEPS = 8
+MIN_ROADMAP_STEPS = 3
+MAX_ROADMAP_STEPS = 6
 MAX_RELATED_MINUTES = 20
 MAX_RELATED_MINUTES_CHARS = 20_000
 GEMINI_REQUEST_TIMEOUT_SECONDS = 30
