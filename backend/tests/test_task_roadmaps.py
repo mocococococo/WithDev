@@ -508,6 +508,99 @@ class RoadmapGenerationApiTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RoadmapGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reuses_matching_result_without_force_regenerate(self) -> None:
+        task = make_task(status="in_progress")
+        task.roadmap.input_hash = "input-hash"
+        task.roadmap.prompt_version = "prompt-version"
+        session = MagicMock()
+        session.commit = AsyncMock()
+
+        class SessionContext:
+            async def __aenter__(self):
+                return session
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        with (
+            patch("app.api.tasks.AsyncSessionLocal", return_value=SessionContext()),
+            patch(
+                "app.api.tasks._get_task_for_roadmap_generation",
+                new_callable=AsyncMock,
+                return_value=task,
+            ),
+            patch(
+                "app.api.tasks._get_task_related_minutes",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "app.api.tasks.task_roadmap_input_hash",
+                return_value="input-hash",
+            ),
+            patch(
+                "app.api.tasks.get_task_roadmap_prompt_version",
+                return_value="prompt-version",
+            ),
+        ):
+            claim = await _claim_task_roadmap_generation(
+                task_id=task.id,
+                request=RoadmapGenerateRequest(
+                    expected_version=task.roadmap.version,
+                ),
+            )
+
+        self.assertIsNone(claim.generation_input)
+        self.assertIsNotNone(claim.task)
+        self.assertEqual(task.roadmap.generation_status, "ready")
+
+    async def test_force_regenerate_bypasses_matching_result(self) -> None:
+        task = make_task(status="in_progress")
+        task.roadmap.input_hash = "input-hash"
+        task.roadmap.prompt_version = "prompt-version"
+        session = MagicMock()
+        session.commit = AsyncMock()
+
+        class SessionContext:
+            async def __aenter__(self):
+                return session
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        with (
+            patch("app.api.tasks.AsyncSessionLocal", return_value=SessionContext()),
+            patch(
+                "app.api.tasks._get_task_for_roadmap_generation",
+                new_callable=AsyncMock,
+                return_value=task,
+            ),
+            patch(
+                "app.api.tasks._get_task_related_minutes",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "app.api.tasks.task_roadmap_input_hash",
+                return_value="input-hash",
+            ),
+            patch(
+                "app.api.tasks.get_task_roadmap_prompt_version",
+                return_value="prompt-version",
+            ),
+        ):
+            claim = await _claim_task_roadmap_generation(
+                task_id=task.id,
+                request=RoadmapGenerateRequest(
+                    expected_version=task.roadmap.version,
+                    force_regenerate=True,
+                ),
+            )
+
+        self.assertIsNotNone(claim.generation_input)
+        self.assertIsNone(claim.task)
+        self.assertEqual(task.roadmap.generation_status, "generating")
+
     async def test_claim_commits_generating_state_before_ai_request(self) -> None:
         task = make_task(status="in_progress")
         task.roadmap.overview = ""

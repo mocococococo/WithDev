@@ -289,10 +289,12 @@ export async function generateTaskRoadmap(
   taskId: string,
   reopen = false,
   expectedVersion?: number,
+  forceRegenerate = false,
 ): Promise<TeamTaskSummary> {
   return mutateTaskRoadmap(user, taskId, '/roadmap/generate', 'POST', {
     reopen,
     expected_version: expectedVersion,
+    force_regenerate: forceRegenerate,
   });
 }
 

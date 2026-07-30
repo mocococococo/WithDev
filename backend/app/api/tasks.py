@@ -146,6 +146,7 @@ class TaskGenerateResponse(BaseModel):
 class RoadmapGenerateRequest(BaseModel):
     reopen: bool = False
     expected_version: int | None = None
+    force_regenerate: bool = False
 
 
 class RoadmapStepSaveRequest(BaseModel):
@@ -968,7 +969,11 @@ async def _claim_task_roadmap_generation(
         )
         prompt_version = get_task_roadmap_prompt_version()
 
-        if roadmap.input_hash == input_hash and roadmap.prompt_version == prompt_version:
+        if (
+            not request.force_regenerate
+            and roadmap.input_hash == input_hash
+            and roadmap.prompt_version == prompt_version
+        ):
             roadmap.generation_status = "ready"
             roadmap.generation_token = None
             roadmap.generation_started_at = None

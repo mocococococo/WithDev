@@ -1605,7 +1605,11 @@ type TaskDetailScreenProps = {
   onSaveTask: (taskId: string, input: TaskUpdateInput) => Promise<TeamTask>;
   onSaveRoadmap: (taskId: string, input: RoadmapSaveInput) => Promise<TeamTask>;
   onDeleteTask: (taskId: string) => Promise<void>;
-  onGenerateRoadmap: (taskId: string, reopen?: boolean) => Promise<void>;
+  onGenerateRoadmap: (
+    taskId: string,
+    reopen?: boolean,
+    forceRegenerate?: boolean,
+  ) => Promise<void>;
   onLogout: () => void;
 };
 
@@ -1628,6 +1632,7 @@ function TaskDetailScreen({
   );
   const [draft, setDraft] = useState(initialTaskDraft);
   const [roadmapDraft, setRoadmapDraft] = useState(initialRoadmapDraft);
+  const [roadmapBaseline, setRoadmapBaseline] = useState(initialRoadmapDraft);
   const [memberQuery, setMemberQuery] = useState('');
   const [isSavingTask, setIsSavingTask] = useState(false);
   const [isSavingRoadmap, setIsSavingRoadmap] = useState(false);
@@ -1648,7 +1653,7 @@ function TaskDetailScreen({
   const isTaskDirty = JSON.stringify(draft) !== JSON.stringify(initialTaskDraft);
   const isRoadmapDirty =
     JSON.stringify(comparableRoadmapDraft(roadmapDraft)) !==
-    JSON.stringify(comparableRoadmapDraft(initialRoadmapDraft));
+    JSON.stringify(comparableRoadmapDraft(roadmapBaseline));
   const editingRoadmapStep = roadmapDraft.find(
     (step) => step.clientId === editingStepId,
   );
@@ -1680,6 +1685,7 @@ function TaskDetailScreen({
   useEffect(() => {
     setDraft(initialTaskDraft);
     setRoadmapDraft(initialRoadmapDraft);
+    setRoadmapBaseline(initialRoadmapDraft);
     setMemberQuery('');
     setEditingStepId(null);
     setStepDraft({ title: '', description: '' });
@@ -1698,6 +1704,7 @@ function TaskDetailScreen({
   useEffect(() => {
     if (hasRoadmapUnsavedChanges || isSavingRoadmap) return;
     setRoadmapDraft(initialRoadmapDraft);
+    setRoadmapBaseline(initialRoadmapDraft);
     setEditingStepId(null);
     setStepDraft({ title: '', description: '' });
     setNewStepDraft({ title: '', description: '' });
@@ -1716,6 +1723,7 @@ function TaskDetailScreen({
 
   const discardRoadmapChanges = () => {
     setRoadmapDraft(initialRoadmapDraft);
+    setRoadmapBaseline(initialRoadmapDraft);
     setEditingStepId(null);
     setStepDraft({ title: '', description: '' });
     setNewStepDraft({ title: '', description: '' });
@@ -1893,7 +1901,9 @@ function TaskDetailScreen({
       setDraft(toTaskDraft(updatedTask));
       setMemberQuery('');
       if (discardRoadmapBeforeSave || !hasRoadmapUnsavedChanges) {
-        setRoadmapDraft(toRoadmapDraft(updatedTask.roadmap));
+        const updatedRoadmapDraft = toRoadmapDraft(updatedTask.roadmap);
+        setRoadmapDraft(updatedRoadmapDraft);
+        setRoadmapBaseline(updatedRoadmapDraft);
       }
     } catch (err) {
       setTaskError(err instanceof Error ? err.message : 'タスクの保存に失敗しました。');
@@ -1917,7 +1927,9 @@ function TaskDetailScreen({
           status,
         })),
       });
-      setRoadmapDraft(toRoadmapDraft(updatedTask.roadmap));
+      const updatedRoadmapDraft = toRoadmapDraft(updatedTask.roadmap);
+      setRoadmapDraft(updatedRoadmapDraft);
+      setRoadmapBaseline(updatedRoadmapDraft);
       setEditingStepId(null);
       setStepDraft({ title: '', description: '' });
       setNewStepDraft({ title: '', description: '' });
@@ -2157,7 +2169,7 @@ function TaskDetailScreen({
                     type="button"
                     onClick={() =>
                       void runRoadmapAction('regenerate', () =>
-                        onGenerateRoadmap(task.id),
+                        onGenerateRoadmap(task.id, false, true),
                       )
                     }
                   >
@@ -2185,7 +2197,7 @@ function TaskDetailScreen({
                   type="button"
                   onClick={() =>
                     void runRoadmapAction('regenerate', () =>
-                      onGenerateRoadmap(task.id, true),
+                      onGenerateRoadmap(task.id, true, true),
                     )
                   }
                 >
@@ -2219,7 +2231,9 @@ function TaskDetailScreen({
                   disabled={roadmapAction !== null || isSavingTask || isSavingRoadmap}
                   type="button"
                   onClick={() =>
-                    void runRoadmapAction('retry', () => onGenerateRoadmap(task.id))
+                    void runRoadmapAction('retry', () =>
+                      onGenerateRoadmap(task.id, false, true),
+                    )
                   }
                 >
                   <RotateCw size={16} />
@@ -3193,7 +3207,12 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     : [];
 
   const launchRoadmapGeneration = useCallback(
-    (taskId: string, expectedVersion?: number, reopen = false) => {
+    (
+      taskId: string,
+      expectedVersion?: number,
+      reopen = false,
+      forceRegenerate = false,
+    ) => {
       const currentRequest = roadmapGenerationRequests.current.get(taskId);
       if (currentRequest) return currentRequest;
 
@@ -3202,6 +3221,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         taskId,
         reopen,
         expectedVersion,
+        forceRegenerate,
       )
         .then((nextTask) => {
           setTasks((currentTasks) =>
@@ -3415,8 +3435,17 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const roadmapVersion = (taskId: string) =>
     tasks.find((task) => task.id === taskId)?.roadmap.version;
 
-  const handleGenerateRoadmap = async (taskId: string, reopen = false) => {
-    await launchRoadmapGeneration(taskId, roadmapVersion(taskId), reopen);
+  const handleGenerateRoadmap = async (
+    taskId: string,
+    reopen = false,
+    forceRegenerate = false,
+  ) => {
+    await launchRoadmapGeneration(
+      taskId,
+      roadmapVersion(taskId),
+      reopen,
+      forceRegenerate,
+    );
   };
 
   const handleDeleteTask = async (taskId: string) => {
