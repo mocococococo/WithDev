@@ -717,10 +717,18 @@ function TaskStatusBadge({ status }: { status: TaskStatus }) {
 type TaskCardProps = {
   task: TeamTask;
   compact?: boolean;
+  showAssignee?: boolean;
   onOpen: () => void;
 };
 
-function TaskCard({ task, compact = false, onOpen }: TaskCardProps) {
+function TaskCard({
+  task,
+  compact = false,
+  showAssignee = true,
+  onOpen,
+}: TaskCardProps) {
+  const hasMeta = showAssignee || task.source_minutes_id;
+
   return (
     <button className={compact ? 'task-card compact' : 'task-card'} type="button" onClick={onOpen}>
       <div className="task-card-header">
@@ -728,10 +736,12 @@ function TaskCard({ task, compact = false, onOpen }: TaskCardProps) {
         <span>{formatDate(task.due_at)}</span>
       </div>
       <h3>{task.title}</h3>
-      <div className="task-card-meta">
-        <span>{task.assignee_name ?? '未担当'}</span>
-        {task.source_minutes_id && <span>{task.source_minutes_id}</span>}
-      </div>
+      {hasMeta && (
+        <div className="task-card-meta">
+          {showAssignee && <span>{task.assignee_name ?? '未担当'}</span>}
+          {task.source_minutes_id && <span>{task.source_minutes_id}</span>}
+        </div>
+      )}
     </button>
   );
 }
@@ -1337,6 +1347,53 @@ function TeamTaskScreen({
       }),
     );
   }, [currentUserId, ownershipFilter, statusFilter, tasks]);
+  const taskColumns = useMemo(() => {
+    const visibleTasksByAssignee = new globalThis.Map<string, TeamTask[]>();
+    const unassignedTasks: TeamTask[] = [];
+
+    for (const task of visibleTasks) {
+      if (!task.assignee_user_id) {
+        unassignedTasks.push(task);
+        continue;
+      }
+      const assignedTasks = visibleTasksByAssignee.get(task.assignee_user_id) ?? [];
+      assignedTasks.push(task);
+      visibleTasksByAssignee.set(task.assignee_user_id, assignedTasks);
+    }
+
+    const visibleMembers =
+      ownershipFilter === 'mine'
+        ? members.filter((member) => member.user_id === currentUserId)
+        : members;
+    const columns = visibleMembers.map((member) => ({
+      id: member.user_id,
+      name: member.display_name || member.email,
+      tasks: visibleTasksByAssignee.get(member.user_id) ?? [],
+      isUnassigned: false,
+    }));
+    const memberIds = new Set(members.map((member) => member.user_id));
+
+    for (const [assigneeUserId, assignedTasks] of visibleTasksByAssignee) {
+      if (memberIds.has(assigneeUserId)) continue;
+      columns.push({
+        id: assigneeUserId,
+        name: assignedTasks[0]?.assignee_name ?? '不明な担当者',
+        tasks: assignedTasks,
+        isUnassigned: false,
+      });
+    }
+
+    if (ownershipFilter === 'all') {
+      columns.push({
+        id: 'unassigned',
+        name: '未担当',
+        tasks: unassignedTasks,
+        isUnassigned: true,
+      });
+    }
+
+    return columns;
+  }, [currentUserId, members, ownershipFilter, visibleTasks]);
 
   const handleCreateTask = async (input: TaskCreateInput) => {
     await onCreateTask(input);
@@ -1427,9 +1484,33 @@ function TeamTaskScreen({
           <h2>読み込み中</h2>
         </section>
       ) : visibleTasks.length > 0 ? (
-        <section className="task-list" aria-label="チーム全体のタスク一覧">
-          {visibleTasks.map((task) => (
-            <TaskCard key={task.id} task={task} onOpen={() => onOpenTask(task.id)} />
+        <section className="task-board" aria-label="担当者別のチームタスク">
+          {taskColumns.map((column) => (
+            <section className="task-assignee-column" key={column.id}>
+              <header className="task-assignee-column-header">
+                <span className={column.isUnassigned ? 'task-assignee-icon unassigned' : 'task-assignee-icon'}>
+                  {column.isUnassigned ? <Users size={18} /> : <CircleUserRound size={18} />}
+                </span>
+                <div>
+                  <h2>{column.name}</h2>
+                  <span>{column.tasks.length} 件</span>
+                </div>
+              </header>
+              {column.tasks.length > 0 ? (
+                <div className="task-assignee-list">
+                  {column.tasks.map((task) => (
+                    <TaskCard
+                      key={task.id}
+                      task={task}
+                      showAssignee={false}
+                      onOpen={() => onOpenTask(task.id)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="task-assignee-empty">該当するタスクはありません。</p>
+              )}
+            </section>
           ))}
         </section>
       ) : (
