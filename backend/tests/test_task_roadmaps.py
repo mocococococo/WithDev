@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.api.tasks import (
+    RoadmapGenerationInput,
     RoadmapGenerateRequest,
     RoadmapStepUpdateRequest,
     _complete_all_roadmap_steps,
@@ -14,10 +15,15 @@ from app.api.tasks import (
     _roadmap_generation_is_stale,
     _sync_task_completion_from_steps,
     generate_task_roadmap_endpoint,
+    generate_task_roadmap_background,
     update_roadmap_step,
 )
 from app.models.task import Task, TaskRoadmap, TaskRoadmapStep
 from app.services.task_roadmap_service import (
+    GEMINI_REQUEST_TIMEOUT_SECONDS,
+    MAX_RELATED_MINUTES_CHARS,
+    build_fallback_task_roadmap,
+    generate_task_roadmap,
     TaskRoadmapGenerationError,
     parse_task_roadmap,
 )
@@ -357,6 +363,51 @@ class RoadmapGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.roadmap.generation_status, "generating")
         self.assertIsNotNone(task.roadmap.generation_started_at)
 
+    async def test_marks_generation_failed_when_saving_result_fails(self) -> None:
+        token = uuid4()
+        generation_input = RoadmapGenerationInput(
+            generation_token=token,
+            task={"title": "保存する"},
+            related_minutes=[],
+            input_hash="input-hash",
+            prompt_version="prompt-version",
+        )
+        mark_failed = AsyncMock()
+
+        with (
+            patch(
+                "app.api.tasks._prepare_task_roadmap_generation",
+                new_callable=AsyncMock,
+                return_value=generation_input,
+            ),
+            patch(
+                "app.api.tasks.run_in_threadpool",
+                new_callable=AsyncMock,
+                return_value={
+                    "overview": "保存する。",
+                    "steps": [
+                        {
+                            "existing_step_id": None,
+                            "title": "保存する",
+                            "description": "保存を確認する。",
+                        }
+                    ],
+                },
+            ),
+            patch(
+                "app.api.tasks._apply_task_roadmap_generation",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("database unavailable"),
+            ),
+            patch(
+                "app.api.tasks._mark_task_roadmap_generation_failed",
+                mark_failed,
+            ),
+        ):
+            await generate_task_roadmap_background(uuid4(), token)
+
+        mark_failed.assert_awaited_once()
+
 
 class RoadmapGenerationLeaseTests(unittest.TestCase):
     def test_only_treats_old_or_untracked_generation_as_stale(self) -> None:
@@ -375,26 +426,9 @@ class RoadmapGenerationLeaseTests(unittest.TestCase):
 
 
 class RoadmapResponseParsingTests(unittest.TestCase):
-    def test_accepts_valid_three_to_eight_step_response(self) -> None:
+    def test_accepts_valid_one_to_eight_step_response(self) -> None:
         payload = {
             "overview": "リリースまでの確認を進める。",
-            "steps": [
-                {
-                    "existing_step_id": None,
-                    "title": f"確認{i}",
-                    "description": "結果を記録する。",
-                }
-                for i in range(3)
-            ],
-        }
-
-        parsed = parse_task_roadmap(json.dumps(payload, ensure_ascii=False))
-
-        self.assertEqual(len(parsed["steps"]), 3)
-
-    def test_rejects_response_with_too_few_steps(self) -> None:
-        payload = {
-            "overview": "不足",
             "steps": [
                 {
                     "existing_step_id": None,
@@ -404,8 +438,187 @@ class RoadmapResponseParsingTests(unittest.TestCase):
             ],
         }
 
+        parsed = parse_task_roadmap(json.dumps(payload, ensure_ascii=False))
+
+        self.assertEqual(len(parsed["steps"]), 1)
+        self.assertIsNone(parsed["steps"][0]["existing_step_id"])
+
+    def test_rejects_response_without_steps(self) -> None:
+        payload = {
+            "overview": "不足",
+            "steps": [],
+        }
+
         with self.assertRaises(TaskRoadmapGenerationError):
             parse_task_roadmap(json.dumps(payload, ensure_ascii=False))
+
+
+class RoadmapOneShotGenerationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.task = {
+            "task_id": str(uuid4()),
+            "title": "契約書を担当者へ送付する",
+            "body": "確定した契約書を担当者へメールで送付する",
+            "status": "todo",
+            "assignee_name": "担当者",
+            "due_at": None,
+        }
+
+    def test_uses_structured_output_and_calls_gemini_once(self) -> None:
+        model = MagicMock()
+        model.generate_content.return_value = SimpleNamespace(
+            parts=[object()],
+            text=json.dumps(
+                {
+                    "overview": "契約書を送付する。",
+                    "steps": [
+                        {
+                            "title": "契約書を送付する",
+                            "description": "担当者へのメール送信が完了している。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        with (
+            patch(
+                "app.services.task_roadmap_service.get_settings",
+                return_value=SimpleNamespace(
+                    gemini_api_key="test-key",
+                    gemini_model="gemini-2.5-flash",
+                ),
+            ),
+            patch("app.services.task_roadmap_service.genai.configure"),
+            patch(
+                "app.services.task_roadmap_service.genai.GenerativeModel",
+                return_value=model,
+            ),
+        ):
+            generated = generate_task_roadmap(
+                task=self.task,
+                related_minutes=[],
+            )
+
+        model.generate_content.assert_called_once()
+        _, kwargs = model.generate_content.call_args
+        generation_config = kwargs["generation_config"]
+        request_options = kwargs["request_options"]
+        steps_schema = generation_config.response_schema["properties"]["steps"]
+        self.assertEqual(generation_config.response_mime_type, "application/json")
+        self.assertEqual(steps_schema["min_items"], 1)
+        self.assertEqual(steps_schema["max_items"], 8)
+        self.assertIsNone(request_options.retry)
+        self.assertEqual(request_options.timeout, GEMINI_REQUEST_TIMEOUT_SECONDS)
+        self.assertEqual(len(generated["steps"]), 1)
+
+    def test_returns_deterministic_fallback_without_second_ai_call(self) -> None:
+        model = MagicMock()
+        model.generate_content.side_effect = RuntimeError("Gemini unavailable")
+
+        with (
+            patch(
+                "app.services.task_roadmap_service.get_settings",
+                return_value=SimpleNamespace(
+                    gemini_api_key="test-key",
+                    gemini_model="gemini-2.5-flash",
+                ),
+            ),
+            patch("app.services.task_roadmap_service.genai.configure"),
+            patch(
+                "app.services.task_roadmap_service.genai.GenerativeModel",
+                return_value=model,
+            ),
+        ):
+            generated = generate_task_roadmap(
+                task=self.task,
+                related_minutes=[],
+            )
+
+        model.generate_content.assert_called_once()
+        self.assertEqual(generated, build_fallback_task_roadmap(self.task))
+        self.assertEqual(len(generated["steps"]), 1)
+
+    def test_returns_fallback_for_invalid_structured_response_without_second_call(
+        self,
+    ) -> None:
+        model = MagicMock()
+        model.generate_content.return_value = SimpleNamespace(
+            parts=[object()],
+            text='{"overview": "ステップ不足", "steps": []}',
+        )
+
+        with (
+            patch(
+                "app.services.task_roadmap_service.get_settings",
+                return_value=SimpleNamespace(
+                    gemini_api_key="test-key",
+                    gemini_model="gemini-2.5-flash",
+                ),
+            ),
+            patch("app.services.task_roadmap_service.genai.configure"),
+            patch(
+                "app.services.task_roadmap_service.genai.GenerativeModel",
+                return_value=model,
+            ),
+        ):
+            generated = generate_task_roadmap(
+                task=self.task,
+                related_minutes=[],
+            )
+
+        model.generate_content.assert_called_once()
+        self.assertEqual(generated, build_fallback_task_roadmap(self.task))
+
+    def test_limits_minutes_body_in_the_single_prompt(self) -> None:
+        model = MagicMock()
+        model.generate_content.return_value = SimpleNamespace(
+            parts=[object()],
+            text=json.dumps(
+                {
+                    "overview": "議事録に沿って進める。",
+                    "steps": [
+                        {
+                            "title": "対応する",
+                            "description": "対応結果を確認する。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        minutes_body = "長" * (MAX_RELATED_MINUTES_CHARS + 100)
+
+        with (
+            patch(
+                "app.services.task_roadmap_service.get_settings",
+                return_value=SimpleNamespace(
+                    gemini_api_key="test-key",
+                    gemini_model="gemini-2.5-flash",
+                ),
+            ),
+            patch("app.services.task_roadmap_service.genai.configure"),
+            patch(
+                "app.services.task_roadmap_service.genai.GenerativeModel",
+                return_value=model,
+            ),
+        ):
+            generate_task_roadmap(
+                task=self.task,
+                related_minutes=[
+                    {
+                        "minutes_id": str(uuid4()),
+                        "title": "議事録",
+                        "body": minutes_body,
+                        "updated_at": "2026-07-30T00:00:00+00:00",
+                    }
+                ],
+            )
+
+        prompt = model.generate_content.call_args.args[0]
+        self.assertIn("長" * MAX_RELATED_MINUTES_CHARS, prompt)
+        self.assertNotIn("長" * (MAX_RELATED_MINUTES_CHARS + 1), prompt)
 
 
 if __name__ == "__main__":

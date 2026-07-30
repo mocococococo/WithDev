@@ -68,8 +68,6 @@ class RoadmapGenerationInput:
     generation_token: UUID
     task: dict[str, object]
     related_minutes: list[dict[str, object]]
-    existing_steps: list[dict[str, object]]
-    deleted_steps: list[dict[str, object]]
     input_hash: str
     prompt_version: str
 
@@ -841,8 +839,6 @@ async def generate_task_roadmap_background(
                 generate_task_roadmap,
                 task=generation_input.task,
                 related_minutes=generation_input.related_minutes,
-                existing_steps=generation_input.existing_steps,
-                deleted_steps=generation_input.deleted_steps,
             )
     except Exception as exc:
         await _mark_task_roadmap_generation_failed(
@@ -852,12 +848,19 @@ async def generate_task_roadmap_background(
         )
         return
 
-    await _apply_task_roadmap_generation(
-        task_id=task_id,
-        generation_token=generation_input.generation_token,
-        generation_input=generation_input,
-        generated=generated,
-    )
+    try:
+        await _apply_task_roadmap_generation(
+            task_id=task_id,
+            generation_token=generation_input.generation_token,
+            generation_input=generation_input,
+            generated=generated,
+        )
+    except Exception as exc:
+        await _mark_task_roadmap_generation_failed(
+            task_id=task_id,
+            generation_token=generation_input.generation_token,
+            error=exc,
+        )
 
 
 async def _prepare_task_roadmap_generation(
@@ -896,11 +899,6 @@ async def _prepare_task_roadmap_generation(
             }
             for minutes in related_minutes
         ]
-        active_steps = _active_roadmap_steps(roadmap)
-        existing_steps_payload = [_roadmap_step_prompt_body(step) for step in active_steps]
-        deleted_steps_payload = [
-            _roadmap_step_prompt_body(step) for step in roadmap.steps if step.is_deleted
-        ]
         input_hash = task_roadmap_input_hash(
             task=task_payload,
             related_minutes=minutes_payload,
@@ -919,8 +917,6 @@ async def _prepare_task_roadmap_generation(
             generation_token=generation_token,
             task=task_payload,
             related_minutes=minutes_payload,
-            existing_steps=existing_steps_payload,
-            deleted_steps=deleted_steps_payload,
             input_hash=input_hash,
             prompt_version=prompt_version,
         )
@@ -1113,17 +1109,6 @@ def _roadmap_task_prompt_body(task: Task) -> dict[str, object]:
         "status": task.status,
         "assignee_name": task.assignee_name,
         "due_at": task.due_at.isoformat() if task.due_at else None,
-    }
-
-
-def _roadmap_step_prompt_body(step: TaskRoadmapStep) -> dict[str, object]:
-    return {
-        "id": str(step.id),
-        "title": step.title,
-        "description": step.description,
-        "status": step.status,
-        "source": step.source,
-        "user_edited": step.user_edited,
     }
 
 
