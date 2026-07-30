@@ -1487,11 +1487,13 @@ function TaskDetailScreen({
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [stepDraft, setStepDraft] = useState({ title: '', description: '' });
   const [newStepDraft, setNewStepDraft] = useState({ title: '', description: '' });
-  const isRoadmapLocked =
+  const isRoadmapGenerationRequested =
+    roadmapAction === 'retry' || roadmapAction === 'regenerate';
+  const isRoadmapGenerating =
     task.roadmap.generation_status === 'pending' ||
     task.roadmap.generation_status === 'generating' ||
-    roadmapAction === 'retry' ||
-    roadmapAction === 'regenerate';
+    isRoadmapGenerationRequested;
+  const isRoadmapLocked = isRoadmapGenerating;
   const isTaskDirty = JSON.stringify(draft) !== JSON.stringify(initialTaskDraft);
   const isRoadmapDirty =
     JSON.stringify(comparableRoadmapDraft(roadmapDraft)) !==
@@ -1993,53 +1995,56 @@ function TaskDetailScreen({
               </div>
             </div>
             <div className="roadmap-header-actions">
-              {task.roadmap.generation_status === 'ready' && task.status !== 'done' && (
-                <button
-                  className="quiet-button"
-                  disabled={
-                    roadmapAction !== null || isSavingTask || isSavingRoadmap
-                  }
-                  type="button"
-                  onClick={() =>
-                    void runRoadmapAction('regenerate', () =>
-                      onGenerateRoadmap(task.id),
-                    )
-                  }
-                >
-                  <RotateCw size={16} />
-                  AIで再生成
-                </button>
-              )}
+              {task.roadmap.generation_status === 'ready' &&
+                task.status !== 'done' &&
+                !isRoadmapGenerationRequested && (
+                  <button
+                    className="quiet-button"
+                    disabled={
+                      roadmapAction !== null || isSavingTask || isSavingRoadmap
+                    }
+                    type="button"
+                    onClick={() =>
+                      void runRoadmapAction('regenerate', () =>
+                        onGenerateRoadmap(task.id),
+                      )
+                    }
+                  >
+                    <RotateCw size={16} />
+                    AIで再生成
+                  </button>
+                )}
               <span className="roadmap-progress">
                 {completedSteps}/{roadmapDraft.length}
               </span>
             </div>
           </div>
 
-          {task.roadmap.has_source_updates && task.status === 'done' && (
-            <div className="roadmap-notice">
-              <div>
-                <strong>完了後に関連情報が更新されました</strong>
-                <p>タスクを再オープンして、最新情報からロードマップを再生成できます。</p>
+          {task.roadmap.has_source_updates &&
+            task.status === 'done' &&
+            !isRoadmapGenerationRequested && (
+              <div className="roadmap-notice">
+                <div>
+                  <strong>完了後に関連情報が更新されました</strong>
+                  <p>タスクを再オープンして、最新情報からロードマップを再生成できます。</p>
+                </div>
+                <button
+                  className="secondary-button"
+                  disabled={roadmapAction !== null || isSavingTask || isSavingRoadmap}
+                  type="button"
+                  onClick={() =>
+                    void runRoadmapAction('regenerate', () =>
+                      onGenerateRoadmap(task.id, true),
+                    )
+                  }
+                >
+                  <RotateCw size={16} />
+                  再オープンして再生成
+                </button>
               </div>
-              <button
-                className="secondary-button"
-                disabled={roadmapAction !== null || isSavingTask || isSavingRoadmap}
-                type="button"
-                onClick={() =>
-                  void runRoadmapAction('regenerate', () =>
-                    onGenerateRoadmap(task.id, true),
-                  )
-                }
-              >
-                <RotateCw size={16} />
-                再オープンして再生成
-              </button>
-            </div>
-          )}
+            )}
 
-          {(task.roadmap.generation_status === 'pending' ||
-            task.roadmap.generation_status === 'generating') && (
+          {isRoadmapGenerating && (
             <div className="roadmap-generation-state">
               <Loader2 className="spin" size={22} />
               <div>
@@ -2051,25 +2056,26 @@ function TaskDetailScreen({
             </div>
           )}
 
-          {task.roadmap.generation_status === 'failed' && (
-            <div className="roadmap-generation-state error">
-              <div>
-                <strong>ロードマップを生成できませんでした</strong>
-                <p>{task.roadmap.generation_error ?? '時間をおいて再試行してください。'}</p>
+          {task.roadmap.generation_status === 'failed' &&
+            !isRoadmapGenerationRequested && (
+              <div className="roadmap-generation-state error">
+                <div>
+                  <strong>ロードマップを生成できませんでした</strong>
+                  <p>{task.roadmap.generation_error ?? '時間をおいて再試行してください。'}</p>
+                </div>
+                <button
+                  className="secondary-button"
+                  disabled={roadmapAction !== null || isSavingTask || isSavingRoadmap}
+                  type="button"
+                  onClick={() =>
+                    void runRoadmapAction('retry', () => onGenerateRoadmap(task.id))
+                  }
+                >
+                  <RotateCw size={16} />
+                  再試行
+                </button>
               </div>
-              <button
-                className="secondary-button"
-                disabled={roadmapAction !== null || isSavingTask || isSavingRoadmap}
-                type="button"
-                onClick={() =>
-                  void runRoadmapAction('retry', () => onGenerateRoadmap(task.id))
-                }
-              >
-                <RotateCw size={16} />
-                再試行
-              </button>
-            </div>
-          )}
+            )}
 
           {roadmapDraft.length > 0 && (
             <div className="roadmap-step-list">
@@ -2196,7 +2202,8 @@ function TaskDetailScreen({
             </div>
           )}
 
-          {task.roadmap.generation_status === 'ready' &&
+          {!isRoadmapGenerationRequested &&
+            task.roadmap.generation_status === 'ready' &&
             roadmapDraft.length === 0 && (
               <p className="subtle-copy">ロードマップにはまだステップがありません。</p>
             )}
