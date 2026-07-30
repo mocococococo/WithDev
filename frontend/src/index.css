@@ -988,7 +988,18 @@ h2 {
 .roadmap-header-actions {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 10px;
+}
+
+.roadmap-header-actions .quiet-button {
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+.roadmap-header-actions .quiet-button svg,
+.roadmap-progress {
+  flex: 0 0 auto;
 }
 
 .roadmap-step-list {
