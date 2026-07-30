@@ -21,6 +21,7 @@ export type TaskRoadmap = {
   overview: string;
   generation_status: RoadmapGenerationStatus;
   generation_error: string | null;
+  generation_started_at: number | null;
   version: number;
   has_source_updates: boolean;
   steps: RoadmapStep[];
@@ -95,6 +96,7 @@ type ApiTaskRoadmap = {
   overview: string;
   generation_status: RoadmapGenerationStatus;
   generation_error?: string | null;
+  generation_started_at?: string | null;
   version: number;
   has_source_updates: boolean;
   steps?: ApiRoadmapStep[];
@@ -390,6 +392,12 @@ function toTaskRoadmap(roadmap: ApiTaskRoadmap): TaskRoadmap {
     overview: roadmap.overview,
     generation_status: roadmap.generation_status,
     generation_error: roadmap.generation_error ?? null,
+    generation_started_at:
+      roadmap.generation_started_at === undefined
+        ? Date.now()
+        : roadmap.generation_started_at
+          ? toTimestamp(roadmap.generation_started_at)
+          : null,
     version: roadmap.version,
     has_source_updates: roadmap.has_source_updates,
     steps: Array.isArray(roadmap.steps)

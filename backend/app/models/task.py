@@ -88,6 +88,9 @@ class TaskRoadmap(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     generation_token: Mapped[UUID | None] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
     )
+    generation_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+    )
     input_hash: Mapped[str | None] = mapped_column(String(64))
     prompt_version: Mapped[str | None] = mapped_column(String(64))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

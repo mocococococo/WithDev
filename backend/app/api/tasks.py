@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import json
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -56,6 +58,20 @@ GENERATED_TASK_FIELDS = {
     "status",
     "due_at",
 }
+ROADMAP_GENERATION_STALE_AFTER = timedelta(minutes=2)
+ROADMAP_GENERATION_CONCURRENCY = 2
+roadmap_generation_semaphore = asyncio.Semaphore(ROADMAP_GENERATION_CONCURRENCY)
+
+
+@dataclass(frozen=True)
+class RoadmapGenerationInput:
+    generation_token: UUID
+    task: dict[str, object]
+    related_minutes: list[dict[str, object]]
+    existing_steps: list[dict[str, object]]
+    deleted_steps: list[dict[str, object]]
+    input_hash: str
+    prompt_version: str
 
 
 class RoadmapStepBody(BaseModel):
@@ -73,6 +89,7 @@ class TaskRoadmapBody(BaseModel):
     overview: str
     generation_status: str
     generation_error: str | None
+    generation_started_at: datetime | None
     version: int
     has_source_updates: bool
     steps: list[RoadmapStepBody]
@@ -538,6 +555,11 @@ async def generate_task_roadmap_endpoint(
     task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
     roadmap = _ensure_roadmap(task)
     _check_roadmap_version(roadmap, request.expected_version)
+    if (
+        roadmap.generation_status == "generating"
+        and not _roadmap_generation_is_stale(roadmap)
+    ):
+        return TaskResponse(task=_task_body(task))
     is_initial_generation = not _active_roadmap_steps(roadmap) and not roadmap.overview
     if task.status == "done" and not request.reopen and not is_initial_generation:
         raise HTTPException(
@@ -806,6 +828,43 @@ async def generate_task_roadmap_background(
     task_id: UUID,
     generation_token: UUID | None = None,
 ) -> None:
+    generation_input = await _prepare_task_roadmap_generation(
+        task_id=task_id,
+        generation_token=generation_token,
+    )
+    if generation_input is None:
+        return
+
+    try:
+        async with roadmap_generation_semaphore:
+            generated = await run_in_threadpool(
+                generate_task_roadmap,
+                task=generation_input.task,
+                related_minutes=generation_input.related_minutes,
+                existing_steps=generation_input.existing_steps,
+                deleted_steps=generation_input.deleted_steps,
+            )
+    except Exception as exc:
+        await _mark_task_roadmap_generation_failed(
+            task_id=task_id,
+            generation_token=generation_input.generation_token,
+            error=exc,
+        )
+        return
+
+    await _apply_task_roadmap_generation(
+        task_id=task_id,
+        generation_token=generation_input.generation_token,
+        generation_input=generation_input,
+        generated=generated,
+    )
+
+
+async def _prepare_task_roadmap_generation(
+    *,
+    task_id: UUID,
+    generation_token: UUID | None,
+) -> RoadmapGenerationInput | None:
     async with AsyncSessionLocal() as session:
         task = await _get_task_for_roadmap_generation(session=session, task_id=task_id)
         if task is None:
@@ -814,10 +873,16 @@ async def generate_task_roadmap_background(
         if generation_token is not None and roadmap.generation_token != generation_token:
             return
         if generation_token is None:
+            if (
+                roadmap.generation_status == "generating"
+                and not _roadmap_generation_is_stale(roadmap)
+            ):
+                return
             generation_token = _mark_roadmap_pending(roadmap)
 
         roadmap.generation_status = "generating"
         roadmap.generation_error = None
+        roadmap.generation_started_at = datetime.now(timezone.utc)
         await session.commit()
 
         task_payload = _roadmap_task_prompt_body(task)
@@ -845,41 +910,73 @@ async def generate_task_roadmap_background(
         if roadmap.input_hash == input_hash and roadmap.prompt_version == prompt_version:
             roadmap.generation_status = "ready"
             roadmap.generation_token = None
+            roadmap.generation_started_at = None
             roadmap.has_source_updates = False
             await session.commit()
             return
 
-        try:
-            generated = await run_in_threadpool(
-                generate_task_roadmap,
-                task=task_payload,
-                related_minutes=minutes_payload,
-                existing_steps=existing_steps_payload,
-                deleted_steps=deleted_steps_payload,
-            )
-        except Exception as exc:
-            await session.refresh(roadmap)
-            if roadmap.generation_token == generation_token:
-                roadmap.generation_status = "failed"
-                roadmap.generation_error = (
-                    "AIによるロードマップ生成に失敗しました。再試行してください。"
-                    if isinstance(exc, TaskRoadmapGenerationError)
-                    else "ロードマップ生成中に予期しないエラーが発生しました。"
-                )
-                roadmap.generation_token = None
-                await session.commit()
-            return
+        generation_input = RoadmapGenerationInput(
+            generation_token=generation_token,
+            task=task_payload,
+            related_minutes=minutes_payload,
+            existing_steps=existing_steps_payload,
+            deleted_steps=deleted_steps_payload,
+            input_hash=input_hash,
+            prompt_version=prompt_version,
+        )
+        # The SELECT above starts a transaction. End it before waiting for Gemini so
+        # unrelated API requests can continue using the database connection pool.
+        await session.rollback()
+        return generation_input
 
+
+async def _mark_task_roadmap_generation_failed(
+    *,
+    task_id: UUID,
+    generation_token: UUID | None,
+    error: Exception,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        task = await _get_task_for_roadmap_generation(session=session, task_id=task_id)
+        if task is None:
+            return
+        roadmap = _ensure_roadmap(task)
+        if roadmap.generation_token != generation_token:
+            return
+        roadmap.generation_status = "failed"
+        roadmap.generation_error = (
+            "AIによるロードマップ生成に失敗しました。再試行してください。"
+            if isinstance(error, TaskRoadmapGenerationError)
+            else "ロードマップ生成中に予期しないエラーが発生しました。"
+        )
+        roadmap.generation_token = None
+        roadmap.generation_started_at = None
+        await session.commit()
+
+
+async def _apply_task_roadmap_generation(
+    *,
+    task_id: UUID,
+    generation_token: UUID | None,
+    generation_input: RoadmapGenerationInput,
+    generated: dict,
+) -> None:
+    async with AsyncSessionLocal() as session:
+        task = await _get_task_for_roadmap_generation(session=session, task_id=task_id)
+        if task is None:
+            return
+        roadmap = _ensure_roadmap(task)
         await session.refresh(roadmap, attribute_names=["steps"])
         if roadmap.generation_token != generation_token:
             return
         await session.refresh(task)
         _merge_generated_roadmap(task=task, roadmap=roadmap, generated=generated)
-        roadmap.input_hash = input_hash
-        roadmap.prompt_version = prompt_version
+        roadmap.input_hash = generation_input.input_hash
+        roadmap.prompt_version = generation_input.prompt_version
         roadmap.generation_status = "ready"
         roadmap.generation_error = None
         roadmap.generation_token = None
+        roadmap.generation_started_at = None
         roadmap.has_source_updates = False
         roadmap.last_generated_at = datetime.now(timezone.utc)
         roadmap.version += 1
@@ -1046,8 +1143,25 @@ def _mark_roadmap_pending(roadmap: TaskRoadmap) -> UUID:
     roadmap.generation_status = "pending"
     roadmap.generation_error = None
     roadmap.generation_token = generation_token
+    roadmap.generation_started_at = None
     roadmap.version += 1
     return generation_token
+
+
+def _roadmap_generation_is_stale(
+    roadmap: TaskRoadmap,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if roadmap.generation_status != "generating":
+        return False
+    if roadmap.generation_started_at is None:
+        return True
+    started_at = roadmap.generation_started_at
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    current_time = now or datetime.now(timezone.utc)
+    return current_time - started_at >= ROADMAP_GENERATION_STALE_AFTER
 
 
 def _active_roadmap_steps(roadmap: TaskRoadmap) -> list[TaskRoadmapStep]:
@@ -1595,6 +1709,7 @@ def _roadmap_body(roadmap: TaskRoadmap | None) -> TaskRoadmapBody | None:
         overview=roadmap.overview,
         generation_status=roadmap.generation_status,
         generation_error=roadmap.generation_error,
+        generation_started_at=roadmap.generation_started_at,
         version=roadmap.version,
         has_source_updates=roadmap.has_source_updates,
         steps=[

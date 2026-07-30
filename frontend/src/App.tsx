@@ -83,6 +83,7 @@ import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthCont
 
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
 const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
+const ROADMAP_GENERATION_STALE_AFTER_MS = 2 * 60 * 1000;
 
 type MeetingFilter = 'all' | MeetingStatus;
 type TaskFilter = 'all' | TaskStatus;
@@ -293,10 +294,19 @@ function createPendingRoadmap(taskId: string): TaskRoadmap {
     overview: '',
     generation_status: 'pending',
     generation_error: null,
+    generation_started_at: null,
     version: 1,
     has_source_updates: false,
     steps: [],
   };
+}
+
+function isRoadmapGenerationStale(roadmap: TaskRoadmap) {
+  return (
+    roadmap.generation_status === 'generating' &&
+    (roadmap.generation_started_at === null ||
+      Date.now() - roadmap.generation_started_at >= ROADMAP_GENERATION_STALE_AFTER_MS)
+  );
 }
 
 function withRoadmap(task: TeamTaskSummary): TeamTask {
@@ -1806,21 +1816,10 @@ function TaskDetailScreen({
               <Loader2 className="spin" size={22} />
               <div>
                 <strong>AIがロードマップを生成しています</strong>
-                <p>タスクは保存済みです。この画面を開いたまま待つことができます。</p>
+                <p>
+                  タスクは保存済みです。生成が中断された場合は、2分後に自動で再試行します。
+                </p>
               </div>
-              <button
-                className="quiet-button"
-                disabled={roadmapAction !== null}
-                type="button"
-                onClick={() =>
-                  void runRoadmapAction('restart-generation', () =>
-                    onGenerateRoadmap(task.id),
-                  )
-                }
-              >
-                <RotateCw size={15} />
-                生成をやり直す
-              </button>
             </div>
           )}
 
@@ -2803,32 +2802,40 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
 
   useEffect(() => {
     if (!selectedTask) return;
-    const isGenerating =
+    const isWaitingForGeneration =
       selectedTask.roadmap.generation_status === 'pending' ||
       selectedTask.roadmap.generation_status === 'generating';
-    if (!isGenerating) return;
+    if (!isWaitingForGeneration) return;
 
     let isCancelled = false;
-    void launchRoadmapGeneration(
-      selectedTask.id,
-      selectedTask.roadmap.version,
-    ).catch((err) => {
-      if (!isCancelled) {
-        setTaskError(
-          err instanceof Error ? err.message : 'ロードマップを生成できませんでした。',
-        );
+    const launchIfNeeded = (task: TeamTask) => {
+      if (
+        task.roadmap.generation_status !== 'pending' &&
+        !isRoadmapGenerationStale(task.roadmap)
+      ) {
+        return;
       }
-    });
+      void launchRoadmapGeneration(task.id, task.roadmap.version).catch((err) => {
+        if (!isCancelled) {
+          setTaskError(
+            err instanceof Error ? err.message : 'ロードマップを生成できませんでした。',
+          );
+        }
+      });
+    };
+    launchIfNeeded(selectedTask);
 
     const refreshRoadmap = async () => {
       try {
         const nextTask = await fetchTask(currentUser, selectedTask.id);
         if (!isCancelled) {
+          const taskWithRoadmap = withRoadmap(nextTask);
           setTasks((currentTasks) =>
             currentTasks.map((task) =>
-              task.id === nextTask.id ? withRoadmap(nextTask) : task,
+              task.id === nextTask.id ? taskWithRoadmap : task,
             ),
           );
+          launchIfNeeded(taskWithRoadmap);
         }
       } catch (err) {
         if (!isCancelled) {
@@ -2849,6 +2856,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     launchRoadmapGeneration,
     selectedTask?.id,
     selectedTask?.roadmap.generation_status,
+    selectedTask?.roadmap.generation_started_at,
     selectedTask?.roadmap.id,
   ]);
 
@@ -2916,19 +2924,20 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     setTaskError(null);
     const nextTasks = await generateTeamTasks(currentUser, selectedTeam.team_id, minutesId);
     setTasks(withRoadmaps(nextTasks));
-    for (const task of nextTasks) {
-      if (
-        task.roadmap?.generation_status === 'pending' ||
-        task.roadmap?.generation_status === 'generating' ||
-        task.roadmap === null
-      ) {
-        void launchRoadmapGeneration(task.id, task.roadmap?.version).catch((err) => {
+    const tasksWaitingForRoadmap = nextTasks.filter(
+      (task) => task.roadmap?.generation_status === 'pending' || task.roadmap === null,
+    );
+    void (async () => {
+      for (const task of tasksWaitingForRoadmap) {
+        try {
+          await launchRoadmapGeneration(task.id, task.roadmap?.version);
+        } catch (err) {
           setTaskError(
             err instanceof Error ? err.message : 'ロードマップを生成できませんでした。',
           );
-        });
+        }
       }
-    }
+    })();
   };
 
   const handleCreateTask = async (input: TaskCreateInput) => {
@@ -2958,8 +2967,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     );
     if (
       updatedTask.status !== 'done' &&
-      (updatedTask.roadmap?.generation_status === 'pending' ||
-        updatedTask.roadmap?.generation_status === 'generating')
+      updatedTask.roadmap?.generation_status === 'pending'
     ) {
       void launchRoadmapGeneration(
         updatedTask.id,

@@ -2,7 +2,7 @@ import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.api.tasks import (
@@ -10,6 +10,8 @@ from app.api.tasks import (
     RoadmapStepUpdateRequest,
     _complete_all_roadmap_steps,
     _merge_generated_roadmap,
+    _prepare_task_roadmap_generation,
+    _roadmap_generation_is_stale,
     _sync_task_completion_from_steps,
     generate_task_roadmap_endpoint,
     update_roadmap_step,
@@ -232,6 +234,38 @@ class RoadmapStepApiTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RoadmapGenerationApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_does_not_start_duplicate_generation_while_current_run_is_fresh(
+        self,
+    ) -> None:
+        task = make_task(status="in_progress")
+        task.roadmap.generation_status = "generating"
+        task.roadmap.generation_started_at = datetime.now(timezone.utc)
+        session = MagicMock()
+        session.commit = AsyncMock()
+        generation = AsyncMock()
+
+        with (
+            patch(
+                "app.api.tasks._get_accessible_task",
+                new_callable=AsyncMock,
+                return_value=task,
+            ),
+            patch(
+                "app.api.tasks.generate_task_roadmap_background",
+                generation,
+            ),
+        ):
+            response = await generate_task_roadmap_endpoint(
+                task_id=task.id,
+                request=RoadmapGenerateRequest(expected_version=task.roadmap.version),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        generation.assert_not_awaited()
+        session.commit.assert_not_awaited()
+        self.assertEqual(response.task.roadmap.generation_status, "generating")
+
     async def test_waits_for_generation_and_returns_refreshed_roadmap(self) -> None:
         task = make_task(status="in_progress")
         task.roadmap.overview = ""
@@ -277,6 +311,67 @@ class RoadmapGenerationApiTests(unittest.IsolatedAsyncioTestCase):
         session.expire_all.assert_called_once()
         self.assertEqual(response.task.roadmap.generation_status, "ready")
         self.assertEqual(len(response.task.roadmap.steps), 3)
+
+
+class RoadmapGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_releases_preparation_transaction_before_ai_request(self) -> None:
+        task = make_task(status="in_progress")
+        task.roadmap.overview = ""
+        task.roadmap.input_hash = None
+        task.roadmap.prompt_version = None
+        token = uuid4()
+        task.roadmap.generation_status = "pending"
+        task.roadmap.generation_token = token
+        session = MagicMock()
+        session.commit = AsyncMock()
+        session.rollback = AsyncMock()
+
+        class SessionContext:
+            async def __aenter__(self):
+                return session
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        with (
+            patch("app.api.tasks.AsyncSessionLocal", return_value=SessionContext()),
+            patch(
+                "app.api.tasks._get_task_for_roadmap_generation",
+                new_callable=AsyncMock,
+                return_value=task,
+            ),
+            patch(
+                "app.api.tasks._get_task_related_minutes",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            generation_input = await _prepare_task_roadmap_generation(
+                task_id=task.id,
+                generation_token=token,
+            )
+
+        self.assertIsNotNone(generation_input)
+        self.assertEqual(generation_input.generation_token, token)
+        session.rollback.assert_awaited_once()
+        self.assertEqual(task.roadmap.generation_status, "generating")
+        self.assertIsNotNone(task.roadmap.generation_started_at)
+
+
+class RoadmapGenerationLeaseTests(unittest.TestCase):
+    def test_only_treats_old_or_untracked_generation_as_stale(self) -> None:
+        roadmap = make_task().roadmap
+        now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+        roadmap.generation_status = "generating"
+
+        roadmap.generation_started_at = now - timedelta(minutes=1)
+        self.assertFalse(_roadmap_generation_is_stale(roadmap, now=now))
+
+        roadmap.generation_started_at = now - timedelta(minutes=3)
+        self.assertTrue(_roadmap_generation_is_stale(roadmap, now=now))
+
+        roadmap.generation_started_at = None
+        self.assertTrue(_roadmap_generation_is_stale(roadmap, now=now))
 
 
 class RoadmapResponseParsingTests(unittest.TestCase):
