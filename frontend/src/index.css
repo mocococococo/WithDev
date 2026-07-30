@@ -649,6 +649,10 @@ h2 {
   gap: 10px;
 }
 
+.my-task-load-more {
+  width: 100%;
+}
+
 .task-card {
   display: grid;
   gap: 10px;

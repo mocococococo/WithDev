@@ -82,6 +82,7 @@ import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthCont
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
 const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
 const ROADMAP_GENERATION_STALE_AFTER_MS = 2 * 60 * 1000;
+const MY_TASKS_PAGE_SIZE = 3;
 
 type MeetingFilter = 'all' | MeetingStatus;
 type TaskFilter = 'all' | TaskStatus;
@@ -763,6 +764,7 @@ function TaskSidebar({
   onOpenTasks,
   onOpenTask,
 }: TaskSidebarProps) {
+  const [visibleMyTaskCount, setVisibleMyTaskCount] = useState(MY_TASKS_PAGE_SIZE);
   const myTasks = useMemo(
     () =>
       currentUserId
@@ -774,6 +776,13 @@ function TaskSidebar({
         : [],
     [currentUserId, tasks],
   );
+  const myTaskIds = myTasks.map((task) => task.id).join('|');
+  const visibleMyTasks = myTasks.slice(0, visibleMyTaskCount);
+  const remainingMyTaskCount = myTasks.length - visibleMyTasks.length;
+
+  useEffect(() => {
+    setVisibleMyTaskCount(MY_TASKS_PAGE_SIZE);
+  }, [currentUserId, myTaskIds]);
 
   return (
     <aside className="task-sidebar" aria-label="チームタスク">
@@ -807,11 +816,25 @@ function TaskSidebar({
             <span>タスクを読み込み中</span>
           </div>
         ) : myTasks.length > 0 ? (
-          <div className="task-list compact">
-            {myTasks.map((task) => (
-              <TaskCard key={task.id} task={task} compact onOpen={() => onOpenTask(task.id)} />
-            ))}
-          </div>
+          <>
+            <div className="task-list compact">
+              {visibleMyTasks.map((task) => (
+                <TaskCard key={task.id} task={task} compact onOpen={() => onOpenTask(task.id)} />
+              ))}
+            </div>
+            {remainingMyTaskCount > 0 && (
+              <button
+                className="secondary-button my-task-load-more"
+                type="button"
+                onClick={() =>
+                  setVisibleMyTaskCount((current) => current + MY_TASKS_PAGE_SIZE)
+                }
+              >
+                <ChevronDown size={17} />
+                続きを表示（残り{remainingMyTaskCount}件）
+              </button>
+            )}
+          </>
         ) : (
           <p className="task-empty">担当タスクはありません。</p>
         )}
