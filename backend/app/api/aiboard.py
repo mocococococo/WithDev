@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from secrets import token_urlsafe
 from typing import Any
@@ -10,6 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from app.api.tasks import (
+    generate_team_tasks_for_minutes,
+    mark_minutes_roadmaps_for_regeneration,
+)
 from app.core.auth import AiboardServiceAccount, verify_aiboard_service_account
 from app.core.config import get_settings
 from app.db.session import get_db_session
@@ -43,11 +48,12 @@ from app.services.slack_service import (
     post_message,
     upload_markdown_file,
 )
-from app.api.tasks import mark_minutes_roadmaps_for_regeneration
+from app.services.tasks_service import TaskGenerationError
 
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 DEFAULT_MINUTES_TITLE = "議事録"
 AIBOARD_STATE_TTL_MINUTES = 10
 
@@ -89,9 +95,18 @@ class AiboardSlackPostBody(BaseModel):
     created_at: datetime | None = None
 
 
+class AiboardTaskGenerationBody(BaseModel):
+    status: str
+    created_count: int = 0
+    updated_count: int = 0
+    deleted_count: int = 0
+    error_message: str | None = None
+
+
 class AiboardMeetingFinishResponse(BaseModel):
     meeting: AiboardMeetingBody
     minutes: AiboardMinutesBody
+    task_generation: AiboardTaskGenerationBody
     slack_post: AiboardSlackPostBody
 
 
@@ -410,6 +425,11 @@ async def finish_aiboard_meeting(
         meeting=meeting,
         source_text=source_text,
     )
+    task_generation = await _generate_tasks_from_minutes(
+        session=session,
+        team_id=request.team_id,
+        minutes=minutes,
+    )
     slack_post = await _post_minutes_to_default_channel(
         session=session,
         team_id=request.team_id,
@@ -419,6 +439,7 @@ async def finish_aiboard_meeting(
     return AiboardMeetingFinishResponse(
         meeting=_meeting_body(meeting),
         minutes=_minutes_body(minutes),
+        task_generation=task_generation,
         slack_post=slack_post,
     )
 
@@ -512,6 +533,33 @@ async def _generate_and_save_minutes(
     await session.commit()
     await session.refresh(minutes)
     return minutes
+
+
+async def _generate_tasks_from_minutes(
+    *,
+    session: AsyncSession,
+    team_id: UUID,
+    minutes: MeetingMinutes,
+) -> AiboardTaskGenerationBody:
+    try:
+        result = await generate_team_tasks_for_minutes(
+            team_id=team_id,
+            minutes_id=minutes.id,
+            session=session,
+        )
+    except TaskGenerationError:
+        logger.exception("Task generation failed for minutes %s", minutes.id)
+        return AiboardTaskGenerationBody(
+            status="failed",
+            error_message="failed to generate tasks",
+        )
+
+    return AiboardTaskGenerationBody(
+        status="success",
+        created_count=result.created_count,
+        updated_count=result.updated_count,
+        deleted_count=result.deleted_count,
+    )
 
 
 async def _post_minutes_to_default_channel(

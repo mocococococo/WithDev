@@ -355,10 +355,29 @@ async def generate_team_tasks(
 ) -> TaskGenerateResponse:
     await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
 
+    try:
+        return await generate_team_tasks_for_minutes(
+            team_id=team_id,
+            minutes_id=request.minutes_id,
+            session=session,
+        )
+    except TaskGenerationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed to generate tasks",
+        ) from exc
+
+
+async def generate_team_tasks_for_minutes(
+    *,
+    team_id: UUID,
+    minutes_id: UUID,
+    session: AsyncSession,
+) -> TaskGenerateResponse:
     minutes, meeting = await _get_accessible_minutes(
         session=session,
         team_id=team_id,
-        minutes_id=request.minutes_id,
+        minutes_id=minutes_id,
     )
     conversation_logs = _conversation_logs_from_meeting(meeting)
     input_hash = _task_generation_input_hash(
@@ -386,19 +405,13 @@ async def generate_team_tasks(
     member_map = {user.id: user for user, _role in members}
     existing_tasks = await _get_team_tasks(session=session, team_id=team_id)
 
-    try:
-        actions = await run_in_threadpool(
-            generate_task_actions_from_minutes,
-            conversation_logs=conversation_logs,
-            minutes_body=minutes.body,
-            existing_tasks=[_task_prompt_body(task) for task in existing_tasks],
-            team_members=[_member_prompt_body(user, role) for user, role in members],
-        )
-    except TaskGenerationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed to generate tasks",
-        ) from exc
+    actions = await run_in_threadpool(
+        generate_task_actions_from_minutes,
+        conversation_logs=conversation_logs,
+        minutes_body=minutes.body,
+        existing_tasks=[_task_prompt_body(task) for task in existing_tasks],
+        team_members=[_member_prompt_body(user, role) for user, role in members],
+    )
 
     existing_task_map = {task.id: task for task in existing_tasks}
     created_count = 0

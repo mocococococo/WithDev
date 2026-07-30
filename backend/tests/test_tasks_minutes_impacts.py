@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+from fastapi import HTTPException
+
 from app.api.tasks import (
     TaskGenerateRequest,
     _validate_generated_task_action,
@@ -11,6 +13,7 @@ from app.api.tasks import (
     list_minutes_tasks,
 )
 from app.models.task import Task, TaskGenerationRun, TaskMinutesImpact
+from app.services.tasks_service import TaskGenerationError
 
 
 def make_task(*, team_id, source_minutes_id=None) -> Task:
@@ -33,6 +36,29 @@ def make_task(*, team_id, source_minutes_id=None) -> Task:
 
 
 class TaskMinutesImpactGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authenticated_endpoint_maps_generation_error_to_http_500(self) -> None:
+        team_id = uuid4()
+        minutes_id = uuid4()
+
+        with (
+            patch("app.api.tasks.require_team_member", new_callable=AsyncMock),
+            patch(
+                "app.api.tasks.generate_team_tasks_for_minutes",
+                new_callable=AsyncMock,
+                side_effect=TaskGenerationError("Gemini request failed"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await generate_team_tasks(
+                    team_id=team_id,
+                    request=TaskGenerateRequest(minutes_id=minutes_id),
+                    auth_user=SimpleNamespace(),
+                    session=MagicMock(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 500)
+        self.assertEqual(raised.exception.detail, "failed to generate tasks")
+
     async def test_returns_existing_tasks_without_regenerating_same_input(self) -> None:
         team_id = uuid4()
         minutes_id = uuid4()
