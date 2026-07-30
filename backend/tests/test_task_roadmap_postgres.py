@@ -13,12 +13,14 @@ import app.models  # noqa: F401 - register every model referenced by foreign key
 from app.api.tasks import (
     RoadmapGenerateRequest,
     _claim_task_roadmap_generation,
+    _finish_task_roadmap_generation_failed,
     _finish_task_roadmap_generation_ready,
     run_task_roadmap_generation,
 )
 from app.db.base import Base
 from app.models.task import Task, TaskRoadmap
 from app.models.team import Team
+from app.services.task_roadmap_service import TaskRoadmapGenerationError
 
 
 class RoadmapPostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -206,6 +208,28 @@ class RoadmapPostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(roadmap.generation_status, "ready")
         self.assertEqual(roadmap.overview, "新しい結果")
         self.assertEqual([step.title for step in roadmap.steps], ["新しいステップ"])
+
+    async def test_quota_failure_is_persisted_without_a_fallback_step(self) -> None:
+        task_id = await self._create_pending_task()
+        claim = await _claim_task_roadmap_generation(
+            task_id=task_id,
+            request=RoadmapGenerateRequest(expected_version=1),
+        )
+        self.assertIsNotNone(claim.generation_input)
+
+        await _finish_task_roadmap_generation_failed(
+            task_id=task_id,
+            generation_token=claim.generation_input.generation_token,
+            error=TaskRoadmapGenerationError(
+                "Gemini request failed",
+                reason="quota_exceeded",
+            ),
+        )
+
+        roadmap = await self._get_roadmap(task_id)
+        self.assertEqual(roadmap.generation_status, "failed")
+        self.assertIn("利用上限", roadmap.generation_error)
+        self.assertEqual(roadmap.steps, [])
 
 
 if __name__ == "__main__":

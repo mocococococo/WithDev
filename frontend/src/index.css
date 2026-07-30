@@ -985,6 +985,12 @@ h2 {
   font-weight: 900;
 }
 
+.roadmap-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .roadmap-step-list {
   display: grid;
   gap: 12px;

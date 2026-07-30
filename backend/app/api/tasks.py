@@ -973,11 +973,7 @@ async def _finish_task_roadmap_generation_failed(
         if roadmap.generation_token != generation_token:
             return _task_body(task)
         roadmap.generation_status = "failed"
-        roadmap.generation_error = (
-            "AIによるロードマップ生成に失敗しました。再試行してください。"
-            if isinstance(error, TaskRoadmapGenerationError)
-            else "ロードマップ生成中に予期しないエラーが発生しました。"
-        )
+        roadmap.generation_error = _task_roadmap_generation_error_message(error)
         roadmap.generation_token = None
         roadmap.generation_started_at = None
         await session.commit()
@@ -1199,6 +1195,36 @@ def _roadmap_generation_is_stale(
         started_at = started_at.replace(tzinfo=timezone.utc)
     current_time = now or datetime.now(timezone.utc)
     return current_time - started_at >= ROADMAP_GENERATION_STALE_AFTER
+
+
+def _task_roadmap_generation_error_message(error: Exception) -> str:
+    if not isinstance(error, TaskRoadmapGenerationError):
+        return "ロードマップ生成中に予期しないエラーが発生しました。"
+
+    messages = {
+        "quota_exceeded": (
+            "AI APIの利用上限に達しました。"
+            "利用枠を確認してから、手動で再試行してください。"
+        ),
+        "configuration_error": (
+            "AI生成の設定が不足しています。管理者に確認してください。"
+        ),
+        "request_failed": (
+            "AIサービスへの接続に失敗しました。"
+            "時間をおいて、手動で再試行してください。"
+        ),
+        "empty_response": (
+            "AIから有効な応答を受け取れませんでした。手動で再試行してください。"
+        ),
+        "invalid_response": (
+            "AIの応答をロードマップとして読み取れませんでした。"
+            "手動で再試行してください。"
+        ),
+    }
+    return messages.get(
+        error.reason,
+        "AIによるロードマップ生成に失敗しました。手動で再試行してください。",
+    )
 
 
 def _active_roadmap_steps(roadmap: TaskRoadmap) -> list[TaskRoadmapStep]:

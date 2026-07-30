@@ -1475,7 +1475,9 @@ function TaskDetailScreen({
   const [newStepDraft, setNewStepDraft] = useState({ title: '', description: '' });
   const isRoadmapLocked =
     task.roadmap.generation_status === 'pending' ||
-    task.roadmap.generation_status === 'generating';
+    task.roadmap.generation_status === 'generating' ||
+    roadmapAction === 'retry' ||
+    roadmapAction === 'regenerate';
   const isDirty = JSON.stringify(draft) !== JSON.stringify(initialDraft);
   const filteredMembers = useMemo(() => {
     const query = memberQuery.trim().toLowerCase();
@@ -1802,9 +1804,26 @@ function TaskDetailScreen({
                 {task.roadmap.overview && <p>{task.roadmap.overview}</p>}
               </div>
             </div>
-            <span className="roadmap-progress">
-              {completedSteps}/{task.roadmap.steps.length}
-            </span>
+            <div className="roadmap-header-actions">
+              {task.roadmap.generation_status === 'ready' && task.status !== 'done' && (
+                <button
+                  className="quiet-button"
+                  disabled={roadmapAction !== null}
+                  type="button"
+                  onClick={() =>
+                    void runRoadmapAction('regenerate', () =>
+                      onGenerateRoadmap(task.id),
+                    )
+                  }
+                >
+                  <RotateCw size={16} />
+                  AIで再生成
+                </button>
+              )}
+              <span className="roadmap-progress">
+                {completedSteps}/{task.roadmap.steps.length}
+              </span>
+            </div>
           </div>
 
           {task.roadmap.has_source_updates && task.status === 'done' && (

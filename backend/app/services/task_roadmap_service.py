@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 
 from app.core.config import get_settings
 
@@ -14,6 +15,7 @@ MAX_ROADMAP_STEPS = 8
 MAX_RELATED_MINUTES = 20
 MAX_RELATED_MINUTES_CHARS = 20_000
 GEMINI_REQUEST_TIMEOUT_SECONDS = 30
+TASK_ROADMAP_GENERATION_POLICY_VERSION = "no-fallback-v1"
 ROADMAP_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -47,7 +49,9 @@ logger = logging.getLogger(__name__)
 
 
 class TaskRoadmapGenerationError(Exception):
-    pass
+    def __init__(self, message: str, *, reason: str = "invalid_response") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def generate_task_roadmap(
@@ -57,7 +61,10 @@ def generate_task_roadmap(
 ) -> dict[str, Any]:
     settings = get_settings()
     if not settings.gemini_api_key or not settings.gemini_model:
-        raise TaskRoadmapGenerationError("Gemini settings are missing")
+        raise TaskRoadmapGenerationError(
+            "Gemini settings are missing",
+            reason="configuration_error",
+        )
 
     prompt = (
         _load_prompt()
@@ -90,18 +97,38 @@ def generate_task_roadmap(
             ),
         )
     except Exception as exc:
-        logger.warning("Using task roadmap fallback after Gemini request failed: %s", exc)
-        return build_fallback_task_roadmap(task)
+        reason = "quota_exceeded" if _is_gemini_quota_error(exc) else "request_failed"
+        logger.warning(
+            "Task roadmap Gemini request failed task_id=%s reason=%s: %s",
+            task.get("task_id"),
+            reason,
+            exc,
+        )
+        raise TaskRoadmapGenerationError(
+            "Gemini request failed",
+            reason=reason,
+        ) from exc
 
     if not getattr(response, "parts", None):
-        logger.warning("Using task roadmap fallback after Gemini returned an empty response")
-        return build_fallback_task_roadmap(task)
+        logger.warning(
+            "Task roadmap Gemini response was empty task_id=%s",
+            task.get("task_id"),
+        )
+        raise TaskRoadmapGenerationError(
+            "Gemini returned an empty response",
+            reason="empty_response",
+        )
 
     try:
         return parse_task_roadmap(response.text)
     except TaskRoadmapGenerationError as exc:
-        logger.warning("Using task roadmap fallback after invalid Gemini response: %s", exc)
-        return build_fallback_task_roadmap(task)
+        logger.warning(
+            "Task roadmap Gemini response was invalid task_id=%s reason=%s: %s",
+            task.get("task_id"),
+            exc.reason,
+            exc,
+        )
+        raise
 
 
 def parse_task_roadmap(value: str) -> dict[str, Any]:
@@ -149,26 +176,6 @@ def parse_task_roadmap(value: str) -> dict[str, Any]:
     return {"overview": overview, "steps": steps}
 
 
-def build_fallback_task_roadmap(task: dict[str, Any]) -> dict[str, Any]:
-    title = _clean_text(task.get("title"), max_length=255) or "タスクを完了する"
-    body = _clean_text(task.get("body"), max_length=5000)
-    completion_condition = (
-        f"「{body}」の内容を実施し、完了したことを確認する。"
-        if body and body != title
-        else f"「{title}」が完了したことを確認する。"
-    )
-    return {
-        "overview": f"「{title}」を完了するため、タスクの内容に沿って作業を進めます。",
-        "steps": [
-            {
-                "existing_step_id": None,
-                "title": title,
-                "description": completion_condition,
-            }
-        ],
-    }
-
-
 def get_task_roadmap_prompt_version() -> str:
     generation_contract = json.dumps(
         {
@@ -176,6 +183,7 @@ def get_task_roadmap_prompt_version() -> str:
             "response_schema": ROADMAP_RESPONSE_SCHEMA,
             "max_related_minutes": MAX_RELATED_MINUTES,
             "max_related_minutes_chars": MAX_RELATED_MINUTES_CHARS,
+            "generation_policy": TASK_ROADMAP_GENERATION_POLICY_VERSION,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -241,3 +249,9 @@ def _clean_text(value: object, *, max_length: int) -> str | None:
         return None
     text = value.strip()
     return text[:max_length] if text else None
+
+
+def _is_gemini_quota_error(error: Exception) -> bool:
+    if isinstance(error, ResourceExhausted):
+        return True
+    return str(error).lstrip().startswith("429 ")

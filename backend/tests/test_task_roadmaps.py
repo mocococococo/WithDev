@@ -17,6 +17,7 @@ from app.api.tasks import (
     _roadmap_generation_is_stale,
     _sync_task_completion_from_steps,
     _task_body,
+    _task_roadmap_generation_error_message,
     generate_task_roadmap_endpoint,
     run_task_roadmap_generation,
     update_roadmap_step,
@@ -26,7 +27,6 @@ from app.models.task import Task, TaskRoadmap, TaskRoadmapStep
 from app.services.task_roadmap_service import (
     GEMINI_REQUEST_TIMEOUT_SECONDS,
     MAX_RELATED_MINUTES_CHARS,
-    build_fallback_task_roadmap,
     generate_task_roadmap,
     TaskRoadmapGenerationError,
     parse_task_roadmap,
@@ -410,6 +410,53 @@ class RoadmapGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         mark_failed.assert_awaited_once()
         self.assertEqual(result.roadmap.generation_status, "failed")
 
+    async def test_quota_error_finishes_failed_without_retrying_ai(self) -> None:
+        task_id = uuid4()
+        token = uuid4()
+        generation_input = RoadmapGenerationInput(
+            generation_token=token,
+            task={"task_id": str(task_id), "title": "生成する"},
+            related_minutes=[],
+            input_hash="input-hash",
+            prompt_version="prompt-version",
+        )
+        failed_task = make_task()
+        failed_task.id = task_id
+        failed_task.roadmap.generation_status = "failed"
+        ai_call = AsyncMock(
+            side_effect=TaskRoadmapGenerationError(
+                "Gemini request failed",
+                reason="quota_exceeded",
+            )
+        )
+        finish_failed = AsyncMock(return_value=_task_body(failed_task))
+
+        with (
+            patch(
+                "app.api.tasks._claim_task_roadmap_generation",
+                new_callable=AsyncMock,
+                return_value=RoadmapGenerationClaim(
+                    generation_input=generation_input,
+                    task=None,
+                ),
+            ),
+            patch("app.api.tasks.run_in_threadpool", ai_call),
+            patch(
+                "app.api.tasks._finish_task_roadmap_generation_failed",
+                finish_failed,
+            ),
+        ):
+            result = await run_task_roadmap_generation(
+                task_id=task_id,
+                request=RoadmapGenerateRequest(),
+            )
+
+        ai_call.assert_awaited_once()
+        finish_failed.assert_awaited_once()
+        recorded_error = finish_failed.await_args.kwargs["error"]
+        self.assertEqual(recorded_error.reason, "quota_exceeded")
+        self.assertEqual(result.roadmap.generation_status, "failed")
+
 
 class RoadmapGenerationEditPolicyTests(unittest.TestCase):
     def test_rejects_changes_while_generation_is_queued_or_running(self) -> None:
@@ -422,6 +469,19 @@ class RoadmapGenerationEditPolicyTests(unittest.TestCase):
                     _reject_changes_while_roadmap_locked(roadmap)
 
                 self.assertEqual(raised.exception.status_code, 409)
+
+
+class RoadmapGenerationErrorMessageTests(unittest.TestCase):
+    def test_explains_quota_failure_and_requires_manual_retry(self) -> None:
+        message = _task_roadmap_generation_error_message(
+            TaskRoadmapGenerationError(
+                "Gemini request failed",
+                reason="quota_exceeded",
+            )
+        )
+
+        self.assertIn("利用上限", message)
+        self.assertIn("手動で再試行", message)
 
 
 class RoadmapGenerationLeaseTests(unittest.TestCase):
@@ -528,9 +588,11 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
         self.assertEqual(request_options.timeout, GEMINI_REQUEST_TIMEOUT_SECONDS)
         self.assertEqual(len(generated["steps"]), 1)
 
-    def test_returns_deterministic_fallback_without_second_ai_call(self) -> None:
+    def test_raises_quota_error_without_second_ai_call(self) -> None:
         model = MagicMock()
-        model.generate_content.side_effect = RuntimeError("Gemini unavailable")
+        model.generate_content.side_effect = RuntimeError(
+            "429 You exceeded your current quota"
+        )
 
         with (
             patch(
@@ -545,17 +607,17 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
                 "app.services.task_roadmap_service.genai.GenerativeModel",
                 return_value=model,
             ),
+            self.assertRaises(TaskRoadmapGenerationError) as raised,
         ):
-            generated = generate_task_roadmap(
+            generate_task_roadmap(
                 task=self.task,
                 related_minutes=[],
             )
 
         model.generate_content.assert_called_once()
-        self.assertEqual(generated, build_fallback_task_roadmap(self.task))
-        self.assertEqual(len(generated["steps"]), 1)
+        self.assertEqual(raised.exception.reason, "quota_exceeded")
 
-    def test_returns_fallback_for_invalid_structured_response_without_second_call(
+    def test_raises_for_invalid_structured_response_without_second_call(
         self,
     ) -> None:
         model = MagicMock()
@@ -577,14 +639,39 @@ class RoadmapOneShotGenerationTests(unittest.TestCase):
                 "app.services.task_roadmap_service.genai.GenerativeModel",
                 return_value=model,
             ),
+            self.assertRaises(TaskRoadmapGenerationError) as raised,
         ):
-            generated = generate_task_roadmap(
+            generate_task_roadmap(
                 task=self.task,
                 related_minutes=[],
             )
 
         model.generate_content.assert_called_once()
-        self.assertEqual(generated, build_fallback_task_roadmap(self.task))
+        self.assertEqual(raised.exception.reason, "invalid_response")
+
+    def test_raises_for_empty_response_without_second_call(self) -> None:
+        model = MagicMock()
+        model.generate_content.return_value = SimpleNamespace(parts=[], text="")
+
+        with (
+            patch(
+                "app.services.task_roadmap_service.get_settings",
+                return_value=SimpleNamespace(
+                    gemini_api_key="test-key",
+                    gemini_model="gemini-2.5-flash",
+                ),
+            ),
+            patch("app.services.task_roadmap_service.genai.configure"),
+            patch(
+                "app.services.task_roadmap_service.genai.GenerativeModel",
+                return_value=model,
+            ),
+            self.assertRaises(TaskRoadmapGenerationError) as raised,
+        ):
+            generate_task_roadmap(task=self.task, related_minutes=[])
+
+        model.generate_content.assert_called_once()
+        self.assertEqual(raised.exception.reason, "empty_response")
 
     def test_limits_minutes_body_in_the_single_prompt(self) -> None:
         model = MagicMock()
