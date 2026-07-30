@@ -28,6 +28,7 @@ from app.services.minutes_service import (
 )
 from app.services.slack_post_service import (
     SlackConnectionNotFoundError,
+    build_minutes_upload_comment,
     get_active_slack_connection,
     get_slack_channel_name,
 )
@@ -35,9 +36,12 @@ from app.services.slack_service import (
     SLACK_AUTHORIZE_URL,
     SLACK_BOT_SCOPES,
     SlackApiError,
+    build_minutes_markdown,
+    build_minutes_markdown_filename,
     build_minutes_message,
     list_public_channels,
     post_message,
+    upload_markdown_file,
 )
 from app.api.tasks import mark_minutes_roadmaps_for_regeneration
 
@@ -537,10 +541,20 @@ async def _post_minutes_to_default_channel(
     )
 
     try:
-        post_result = await post_message(
+        normalized_title = (minutes.title or "").strip() or DEFAULT_MINUTES_TITLE
+        upload_result = await upload_markdown_file(
             bot_access_token=connection.bot_access_token,
             channel_id=channel_id,
-            text=build_minutes_message(title=minutes.title, body=minutes.body),
+            filename=build_minutes_markdown_filename(title=normalized_title),
+            title=normalized_title,
+            content=build_minutes_markdown(
+                title=normalized_title,
+                body=minutes.body,
+            ),
+            initial_comment=build_minutes_upload_comment(
+                frontend_base_url=settings.frontend_base_url,
+                team_id=team_id,
+            ),
         )
     except SlackApiError as exc:
         post_log = SlackPostLog(
@@ -561,9 +575,9 @@ async def _post_minutes_to_default_channel(
     post_log = SlackPostLog(
         minutes_id=minutes.id,
         slack_connection_id=connection.id,
-        channel_id=post_result.channel_id,
+        channel_id=upload_result.channel_id,
         channel_name=channel_name,
-        slack_ts=post_result.slack_ts,
+        slack_ts=None,
         status="success",
         error_message=None,
         is_deleted=False,
