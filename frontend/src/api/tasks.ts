@@ -435,6 +435,9 @@ function toTaskError(detail: string, status: number) {
   if (detail === 'roadmap was updated by another user') {
     return 'ロードマップが別の操作で更新されました。画面を再読み込みしてから再試行してください。';
   }
+  if (detail === 'roadmap generation is in progress') {
+    return 'ロードマップ生成中は変更できません。生成完了後に再試行してください。';
+  }
   if (
     detail === 'completed task must be reopened before roadmap generation' ||
     detail === 'reopen_task is required' ||

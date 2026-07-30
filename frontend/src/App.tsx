@@ -1473,6 +1473,9 @@ function TaskDetailScreen({
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [stepDraft, setStepDraft] = useState({ title: '', description: '' });
   const [newStepDraft, setNewStepDraft] = useState({ title: '', description: '' });
+  const isRoadmapLocked =
+    task.roadmap.generation_status === 'pending' ||
+    task.roadmap.generation_status === 'generating';
   const isDirty = JSON.stringify(draft) !== JSON.stringify(initialDraft);
   const filteredMembers = useMemo(() => {
     const query = memberQuery.trim().toLowerCase();
@@ -1510,6 +1513,7 @@ function TaskDetailScreen({
 
   const handleCreateStep = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (isRoadmapLocked) return;
     if (!newStepDraft.title.trim() || !newStepDraft.description.trim()) return;
     await runRoadmapAction('create-step', async () => {
       await onCreateRoadmapStep(task.id, {
@@ -1521,6 +1525,7 @@ function TaskDetailScreen({
   };
 
   const handleSaveStep = async (stepId: string) => {
+    if (isRoadmapLocked) return;
     if (!stepDraft.title.trim() || !stepDraft.description.trim()) return;
     await runRoadmapAction(`edit-${stepId}`, async () => {
       await onUpdateRoadmapStep(task.id, stepId, {
@@ -1532,6 +1537,7 @@ function TaskDetailScreen({
   };
 
   const handleStepStatus = async (step: RoadmapStep, status: TaskStatus) => {
+    if (isRoadmapLocked) return;
     await runRoadmapAction(`status-${step.id}`, () =>
       onUpdateRoadmapStep(task.id, step.id, {
         status,
@@ -1541,6 +1547,7 @@ function TaskDetailScreen({
   };
 
   const handleMoveStep = async (stepIndex: number, direction: -1 | 1) => {
+    if (isRoadmapLocked) return;
     const nextIndex = stepIndex + direction;
     if (nextIndex < 0 || nextIndex >= task.roadmap.steps.length) return;
     const stepIds = task.roadmap.steps.map((step) => step.id);
@@ -1548,7 +1555,12 @@ function TaskDetailScreen({
     await runRoadmapAction('reorder', () => onReorderRoadmapSteps(task.id, stepIds));
   };
 
-  const canSave = isDirty && draft.title.trim().length > 0 && draft.body.trim().length > 0 && !isSaving;
+  const canSave =
+    isDirty &&
+    draft.title.trim().length > 0 &&
+    draft.body.trim().length > 0 &&
+    !isSaving &&
+    !isRoadmapLocked;
 
   const handleSelectMember = (member: TeamMemberSummary | null) => {
     setDraft((currentDraft) => ({
@@ -1581,7 +1593,7 @@ function TaskDetailScreen({
   };
 
   const handleDelete = async () => {
-    if (isDeleting) return;
+    if (isDeleting || isRoadmapLocked) return;
     const confirmed = window.confirm('このタスクを削除しますか？');
     if (!confirmed) return;
 
@@ -1627,6 +1639,7 @@ function TaskDetailScreen({
             <label className={draft.title !== initialDraft.title ? 'task-field dirty' : 'task-field'}>
               <span>タイトル</span>
               <input
+                disabled={isRoadmapLocked}
                 value={draft.title}
                 onChange={(event) =>
                   setDraft((currentDraft) => ({ ...currentDraft, title: event.target.value }))
@@ -1637,6 +1650,7 @@ function TaskDetailScreen({
             <label className={draft.status !== initialDraft.status ? 'task-field dirty' : 'task-field'}>
               <span>ステータス</span>
               <select
+                disabled={isRoadmapLocked}
                 value={draft.status}
                 onChange={(event) =>
                   setDraft((currentDraft) => ({
@@ -1656,6 +1670,7 @@ function TaskDetailScreen({
             <label className={draft.due_at !== initialDraft.due_at ? 'task-field dirty' : 'task-field'}>
               <span>期限</span>
               <input
+                disabled={isRoadmapLocked}
                 type="date"
                 value={draft.due_at}
                 onChange={(event) =>
@@ -1668,6 +1683,7 @@ function TaskDetailScreen({
           <label className={draft.body !== initialDraft.body ? 'task-field dirty' : 'task-field'}>
             <span>本文</span>
             <textarea
+              disabled={isRoadmapLocked}
               value={draft.body}
               onChange={(event) =>
                 setDraft((currentDraft) => ({ ...currentDraft, body: event.target.value }))
@@ -1688,6 +1704,7 @@ function TaskDetailScreen({
                 <strong>{draft.assignee_name || '未担当'}</strong>
               </div>
               <input
+                disabled={isRoadmapLocked}
                 value={memberQuery}
                 onChange={(event) => setMemberQuery(event.target.value)}
                 placeholder="メンバー名またはメールで検索"
@@ -1696,6 +1713,7 @@ function TaskDetailScreen({
             <div className="assignee-options">
               <button
                 className={!draft.assignee_user_id ? 'assignee-option active' : 'assignee-option'}
+                disabled={isRoadmapLocked}
                 type="button"
                 onClick={() => handleSelectMember(null)}
               >
@@ -1710,6 +1728,7 @@ function TaskDetailScreen({
                       : 'assignee-option'
                   }
                   key={member.user_id}
+                  disabled={isRoadmapLocked}
                   type="button"
                   onClick={() => handleSelectMember(member)}
                 >
@@ -1727,7 +1746,7 @@ function TaskDetailScreen({
               className="danger-button"
               type="button"
               onClick={() => void handleDelete()}
-              disabled={isDeleting}
+              disabled={isDeleting || isRoadmapLocked}
             >
               {isDeleting ? <Loader2 className="spin" size={18} /> : <Trash2 size={18} />}
               {isDeleting ? '削除中' : 'タスクを削除'}
@@ -1853,6 +1872,7 @@ function TaskDetailScreen({
                       <div className="roadmap-step-editor">
                         <input
                           aria-label="ステップ名"
+                          disabled={isRoadmapLocked}
                           maxLength={255}
                           value={stepDraft.title}
                           onChange={(event) =>
@@ -1864,6 +1884,7 @@ function TaskDetailScreen({
                         />
                         <textarea
                           aria-label="ステップの説明"
+                          disabled={isRoadmapLocked}
                           rows={3}
                           value={stepDraft.description}
                           onChange={(event) =>
@@ -1876,7 +1897,7 @@ function TaskDetailScreen({
                         <div className="roadmap-step-actions">
                           <button
                             className="primary-button"
-                            disabled={roadmapAction !== null}
+                            disabled={roadmapAction !== null || isRoadmapLocked}
                             type="button"
                             onClick={() => void handleSaveStep(step.id)}
                           >
@@ -1898,7 +1919,7 @@ function TaskDetailScreen({
                           <h3>{step.title}</h3>
                           <select
                             aria-label={`${step.title}の状態`}
-                            disabled={roadmapAction !== null}
+                            disabled={roadmapAction !== null || isRoadmapLocked}
                             value={step.status}
                             onChange={(event) =>
                               void handleStepStatus(step, event.target.value as TaskStatus)
@@ -1913,6 +1934,7 @@ function TaskDetailScreen({
                         <div className="roadmap-step-actions">
                           <button
                             className="quiet-button"
+                            disabled={isRoadmapLocked}
                             type="button"
                             onClick={() => beginStepEdit(step)}
                           >
@@ -1921,7 +1943,9 @@ function TaskDetailScreen({
                           <button
                             aria-label="一つ上へ"
                             className="icon-button"
-                            disabled={index === 0 || roadmapAction !== null}
+                            disabled={
+                              index === 0 || roadmapAction !== null || isRoadmapLocked
+                            }
                             type="button"
                             onClick={() => void handleMoveStep(index, -1)}
                           >
@@ -1932,7 +1956,8 @@ function TaskDetailScreen({
                             className="icon-button"
                             disabled={
                               index === task.roadmap.steps.length - 1 ||
-                              roadmapAction !== null
+                              roadmapAction !== null ||
+                              isRoadmapLocked
                             }
                             type="button"
                             onClick={() => void handleMoveStep(index, 1)}
@@ -1941,7 +1966,7 @@ function TaskDetailScreen({
                           </button>
                           <button
                             className="danger-link"
-                            disabled={roadmapAction !== null}
+                            disabled={roadmapAction !== null || isRoadmapLocked}
                             type="button"
                             onClick={() => {
                               if (!window.confirm('このステップを削除しますか？')) return;
@@ -1974,6 +1999,7 @@ function TaskDetailScreen({
             </div>
             <input
               aria-label="新しいステップ名"
+              disabled={isRoadmapLocked}
               maxLength={255}
               placeholder="ステップ名"
               value={newStepDraft.title}
@@ -1983,6 +2009,7 @@ function TaskDetailScreen({
             />
             <textarea
               aria-label="新しいステップの説明"
+              disabled={isRoadmapLocked}
               placeholder="完了条件が分かる説明"
               rows={3}
               value={newStepDraft.description}
@@ -1997,6 +2024,7 @@ function TaskDetailScreen({
               className="secondary-button"
               disabled={
                 roadmapAction !== null ||
+                isRoadmapLocked ||
                 !newStepDraft.title.trim() ||
                 !newStepDraft.description.trim()
               }

@@ -6,18 +6,22 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.api.tasks import (
+    RoadmapGenerationClaim,
     RoadmapGenerationInput,
     RoadmapGenerateRequest,
     RoadmapStepUpdateRequest,
+    _claim_task_roadmap_generation,
     _complete_all_roadmap_steps,
     _merge_generated_roadmap,
-    _prepare_task_roadmap_generation,
+    _reject_changes_while_roadmap_locked,
     _roadmap_generation_is_stale,
     _sync_task_completion_from_steps,
+    _task_body,
     generate_task_roadmap_endpoint,
-    generate_task_roadmap_background,
+    run_task_roadmap_generation,
     update_roadmap_step,
 )
+from fastapi import HTTPException
 from app.models.task import Task, TaskRoadmap, TaskRoadmapStep
 from app.services.task_roadmap_service import (
     GEMINI_REQUEST_TIMEOUT_SECONDS,
@@ -240,15 +244,11 @@ class RoadmapStepApiTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RoadmapGenerationApiTests(unittest.IsolatedAsyncioTestCase):
-    async def test_does_not_start_duplicate_generation_while_current_run_is_fresh(
-        self,
-    ) -> None:
+    async def test_releases_request_transaction_before_generation(self) -> None:
         task = make_task(status="in_progress")
-        task.roadmap.generation_status = "generating"
-        task.roadmap.generation_started_at = datetime.now(timezone.utc)
         session = MagicMock()
-        session.commit = AsyncMock()
-        generation = AsyncMock()
+        session.rollback = AsyncMock()
+        generation = AsyncMock(return_value=_task_body(task))
 
         with (
             patch(
@@ -257,7 +257,7 @@ class RoadmapGenerationApiTests(unittest.IsolatedAsyncioTestCase):
                 return_value=task,
             ),
             patch(
-                "app.api.tasks.generate_task_roadmap_background",
+                "app.api.tasks.run_task_roadmap_generation",
                 generation,
             ),
         ):
@@ -268,16 +268,12 @@ class RoadmapGenerationApiTests(unittest.IsolatedAsyncioTestCase):
                 session=session,
             )
 
-        generation.assert_not_awaited()
-        session.commit.assert_not_awaited()
-        self.assertEqual(response.task.roadmap.generation_status, "generating")
+        session.rollback.assert_awaited_once()
+        generation.assert_awaited_once()
+        self.assertEqual(response.task.id, task.id)
 
-    async def test_waits_for_generation_and_returns_refreshed_roadmap(self) -> None:
-        task = make_task(status="in_progress")
-        task.roadmap.overview = ""
-        task.roadmap.generation_status = "generating"
+    async def test_returns_generation_result(self) -> None:
         refreshed_task = make_task(status="in_progress")
-        refreshed_task.id = task.id
         refreshed_task.roadmap.overview = "生成された概要"
         refreshed_task.roadmap.generation_status = "ready"
         for index in range(3):
@@ -287,50 +283,43 @@ class RoadmapGenerationApiTests(unittest.IsolatedAsyncioTestCase):
                 position=index,
             )
         session = MagicMock()
-        session.commit = AsyncMock()
-        generation = AsyncMock()
+        session.rollback = AsyncMock()
+        generation = AsyncMock(return_value=_task_body(refreshed_task))
 
         with (
             patch(
                 "app.api.tasks._get_accessible_task",
                 new_callable=AsyncMock,
-                return_value=task,
-            ),
-            patch(
-                "app.api.tasks.generate_task_roadmap_background",
-                generation,
-            ),
-            patch(
-                "app.api.tasks._get_task_for_roadmap_generation",
-                new_callable=AsyncMock,
                 return_value=refreshed_task,
+            ),
+            patch(
+                "app.api.tasks.run_task_roadmap_generation",
+                generation,
             ),
         ):
             response = await generate_task_roadmap_endpoint(
-                task_id=task.id,
-                request=RoadmapGenerateRequest(expected_version=task.roadmap.version),
+                task_id=refreshed_task.id,
+                request=RoadmapGenerateRequest(
+                    expected_version=refreshed_task.roadmap.version
+                ),
                 auth_user=SimpleNamespace(),
                 session=session,
             )
 
         generation.assert_awaited_once()
-        session.expire_all.assert_called_once()
         self.assertEqual(response.task.roadmap.generation_status, "ready")
         self.assertEqual(len(response.task.roadmap.steps), 3)
 
 
 class RoadmapGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
-    async def test_releases_preparation_transaction_before_ai_request(self) -> None:
+    async def test_claim_commits_generating_state_before_ai_request(self) -> None:
         task = make_task(status="in_progress")
         task.roadmap.overview = ""
         task.roadmap.input_hash = None
         task.roadmap.prompt_version = None
-        token = uuid4()
         task.roadmap.generation_status = "pending"
-        task.roadmap.generation_token = token
         session = MagicMock()
         session.commit = AsyncMock()
-        session.rollback = AsyncMock()
 
         class SessionContext:
             async def __aenter__(self):
@@ -352,18 +341,21 @@ class RoadmapGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 return_value=[],
             ),
         ):
-            generation_input = await _prepare_task_roadmap_generation(
+            claim = await _claim_task_roadmap_generation(
                 task_id=task.id,
-                generation_token=token,
+                request=RoadmapGenerateRequest(
+                    expected_version=task.roadmap.version,
+                ),
             )
 
-        self.assertIsNotNone(generation_input)
-        self.assertEqual(generation_input.generation_token, token)
-        session.rollback.assert_awaited_once()
+        self.assertIsNotNone(claim.generation_input)
+        self.assertIsNone(claim.task)
+        session.commit.assert_awaited_once()
         self.assertEqual(task.roadmap.generation_status, "generating")
         self.assertIsNotNone(task.roadmap.generation_started_at)
 
     async def test_marks_generation_failed_when_saving_result_fails(self) -> None:
+        task_id = uuid4()
         token = uuid4()
         generation_input = RoadmapGenerationInput(
             generation_token=token,
@@ -372,13 +364,19 @@ class RoadmapGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
             input_hash="input-hash",
             prompt_version="prompt-version",
         )
-        mark_failed = AsyncMock()
+        failed_task = make_task()
+        failed_task.id = task_id
+        failed_task.roadmap.generation_status = "failed"
+        mark_failed = AsyncMock(return_value=_task_body(failed_task))
 
         with (
             patch(
-                "app.api.tasks._prepare_task_roadmap_generation",
+                "app.api.tasks._claim_task_roadmap_generation",
                 new_callable=AsyncMock,
-                return_value=generation_input,
+                return_value=RoadmapGenerationClaim(
+                    generation_input=generation_input,
+                    task=None,
+                ),
             ),
             patch(
                 "app.api.tasks.run_in_threadpool",
@@ -395,18 +393,35 @@ class RoadmapGenerationLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 },
             ),
             patch(
-                "app.api.tasks._apply_task_roadmap_generation",
+                "app.api.tasks._finish_task_roadmap_generation_ready",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("database unavailable"),
             ),
             patch(
-                "app.api.tasks._mark_task_roadmap_generation_failed",
+                "app.api.tasks._finish_task_roadmap_generation_failed",
                 mark_failed,
             ),
         ):
-            await generate_task_roadmap_background(uuid4(), token)
+            result = await run_task_roadmap_generation(
+                task_id=task_id,
+                request=RoadmapGenerateRequest(),
+            )
 
         mark_failed.assert_awaited_once()
+        self.assertEqual(result.roadmap.generation_status, "failed")
+
+
+class RoadmapGenerationEditPolicyTests(unittest.TestCase):
+    def test_rejects_changes_while_generation_is_queued_or_running(self) -> None:
+        for generation_status in ("pending", "generating"):
+            with self.subTest(generation_status=generation_status):
+                roadmap = make_task().roadmap
+                roadmap.generation_status = generation_status
+
+                with self.assertRaises(HTTPException) as raised:
+                    _reject_changes_while_roadmap_locked(roadmap)
+
+                self.assertEqual(raised.exception.status_code, 409)
 
 
 class RoadmapGenerationLeaseTests(unittest.TestCase):
