@@ -679,10 +679,8 @@ function MeetingCard({ meeting, onOpen }: MeetingCardProps) {
       <div className="meeting-card-main">
         <div className="meeting-status-row">
           <span className={`status-badge ${meeting.status}`}>{statusLabel}</span>
-          <span className="meeting-id">{meeting.id}</span>
         </div>
         <h2>{meeting.title}</h2>
-        <p>{meeting.initial_theme}</p>
       </div>
 
       <div className="meeting-card-meta">
@@ -1105,8 +1103,6 @@ function MeetingListScreen({
 }: MeetingListScreenProps) {
   const [filter, setFilter] = useState<MeetingFilter>('all');
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [isStartingSlack, setIsStartingSlack] = useState(false);
-  const [slackActionError, setSlackActionError] = useState<string | null>(null);
   const visibleMeetings = useMemo(() => {
     return meetings
       .filter((meeting) => filter === 'all' || meeting.status === filter)
@@ -1119,18 +1115,6 @@ function MeetingListScreen({
     return launchUrl;
   };
 
-  const handleStartSlackOAuth = async () => {
-    setSlackActionError(null);
-    setIsStartingSlack(true);
-    try {
-      const url = await startSlackOAuth(user, team.team_id);
-      window.location.assign(url);
-    } catch (err) {
-      setSlackActionError(err instanceof Error ? err.message : 'Slack連携を開始できませんでした。');
-      setIsStartingSlack(false);
-    }
-  };
-
   return (
     <main className="app-layout">
       <header className="app-header">
@@ -1141,7 +1125,6 @@ function MeetingListScreen({
           </button>
           <p className="eyebrow">Team</p>
           <h1>{team.name}</h1>
-          <p className="subtle-copy">{team.team_id}</p>
         </div>
         <AccountMenu user={user} onLogout={onLogout} />
       </header>
@@ -1154,15 +1137,6 @@ function MeetingListScreen({
               <p>{meetings.length} 件のミーティングがあります。</p>
             </div>
             <div className="toolbar-actions">
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => void handleStartSlackOAuth()}
-                disabled={isStartingSlack}
-              >
-                {isStartingSlack ? <Loader2 className="spin" size={18} /> : <PlugZap size={18} />}
-                Slack連携
-              </button>
               <button
                 className="primary-button"
                 type="button"
@@ -1179,7 +1153,6 @@ function MeetingListScreen({
               {slackNotice.message}
             </p>
           )}
-          {slackActionError && <p className="error-text">{slackActionError}</p>}
 
           {showCreateForm && (
             <MeetingCreateForm
