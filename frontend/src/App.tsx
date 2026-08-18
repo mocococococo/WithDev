@@ -210,6 +210,10 @@ function getDisplayName(user: User) {
   return user.displayName || user.email?.split('@')[0] || 'User';
 }
 
+function getMemberDisplayName(member: TeamMemberSummary) {
+  return member.display_name.trim() || '名前未設定';
+}
+
 function readSlackRedirectNotice(): SlackNotice {
   if (typeof window === 'undefined') return null;
 
@@ -738,7 +742,6 @@ type TaskCardProps = {
   showAssignee?: boolean;
   showFullDueDate?: boolean;
   showProgress?: boolean;
-  showSourceMinutesId?: boolean;
   onOpen: () => void;
 };
 
@@ -748,10 +751,8 @@ function TaskCard({
   showAssignee = true,
   showFullDueDate = false,
   showProgress = false,
-  showSourceMinutesId = true,
   onOpen,
 }: TaskCardProps) {
-  const hasMeta = showAssignee || (showSourceMinutesId && task.source_minutes_id);
   const progress = showProgress ? taskRoadmapProgress(task) : null;
 
   return (
@@ -779,10 +780,9 @@ function TaskCard({
           </span>
         </div>
       )}
-      {hasMeta && (
+      {showAssignee && (
         <div className="task-card-meta">
-          {showAssignee && <span>{task.assignee_name ?? '未担当'}</span>}
-          {showSourceMinutesId && task.source_minutes_id && <span>{task.source_minutes_id}</span>}
+          <span>{task.assignee_name ?? '未担当'}</span>
         </div>
       )}
     </button>
@@ -1332,7 +1332,7 @@ function TaskCreateForm({ members, onCreate, onCancel }: TaskCreateFormProps) {
           <option value="">未担当</option>
           {members.map((member) => (
             <option key={member.user_id} value={member.user_id}>
-              {member.display_name || member.email}
+              {getMemberDisplayName(member)}
             </option>
           ))}
         </select>
@@ -1407,7 +1407,7 @@ function TeamTaskScreen({
         : members;
     const columns = visibleMembers.map((member) => ({
       id: member.user_id,
-      name: member.display_name || member.email,
+      name: getMemberDisplayName(member),
       tasks: visibleTasksByAssignee.get(member.user_id) ?? [],
       isUnassigned: false,
     }));
@@ -1545,7 +1545,6 @@ function TeamTaskScreen({
                       showAssignee={false}
                       showFullDueDate
                       showProgress
-                      showSourceMinutesId={false}
                       onOpen={() => onOpenTask(task.id)}
                     />
                   ))}
@@ -1650,8 +1649,7 @@ function TaskDetailScreen({
 
     return members.filter((member) => {
       const name = member.display_name.toLowerCase();
-      const email = member.email.toLowerCase();
-      return name.includes(query) || email.includes(query);
+      return name.includes(query);
     });
   }, [memberQuery, members]);
 
@@ -2033,7 +2031,7 @@ function TaskDetailScreen({
                 disabled={isTaskFormLocked}
                 value={memberQuery}
                 onChange={(event) => setMemberQuery(event.target.value)}
-                placeholder="メンバー名またはメールで検索"
+                placeholder="メンバー名で検索"
               />
             </div>
             <div className="assignee-options">
@@ -2058,8 +2056,7 @@ function TaskDetailScreen({
                   type="button"
                   onClick={() => handleSelectMember(member)}
                 >
-                  <span>{member.display_name || member.email}</span>
-                  <small>{member.email}</small>
+                  <span>{getMemberDisplayName(member)}</span>
                 </button>
               ))}
             </div>
@@ -2103,10 +2100,6 @@ function TaskDetailScreen({
           <div>
             <span>期限</span>
             <strong>{formatDate(task.due_at)}</strong>
-          </div>
-          <div>
-            <span>元議事録</span>
-            <strong>{task.source_minutes_id ?? '-'}</strong>
           </div>
           <div>
             <span>作成日時</span>
