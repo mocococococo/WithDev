@@ -1181,7 +1181,16 @@ h2 {
   padding: 12px 14px;
 }
 
+.task-assistant-message.user {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .task-assistant-message.user > div {
+  width: fit-content;
+  max-width: 85%;
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
   border-color: #bfdbfe;
   background: #eff6ff;
 }
@@ -1192,11 +1201,14 @@ h2 {
 }
 
 .task-assistant-message.user .task-assistant-avatar {
+  grid-column: 2;
+  grid-row: 1;
   background: #e4e7ec;
   color: #344054;
 }
 
 .task-assistant-message p {
+  overflow-wrap: anywhere;
   color: #344054;
   line-height: 1.7;
   white-space: pre-wrap;
