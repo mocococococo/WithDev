@@ -1089,11 +1089,16 @@ h2 {
 }
 
 .task-assistant-panel {
-  display: grid;
+  position: sticky;
+  top: 16px;
+  display: flex;
+  max-height: calc(100vh - 32px);
+  flex-direction: column;
   grid-column: 2;
-  grid-row: 1 / span 3;
+  grid-row: 1 / span 4;
   align-self: start;
   gap: 16px;
+  overflow: hidden;
   border: 1px solid #bfdbfe;
   border-radius: 8px;
   background: #f8fbff;
@@ -1153,7 +1158,8 @@ h2 {
 
 .task-assistant-messages {
   display: grid;
-  max-height: 520px;
+  min-height: 0;
+  flex: 1 1 auto;
   gap: 12px;
   overflow-y: auto;
   padding: 2px;
@@ -1264,7 +1270,7 @@ h2 {
 
 .roadmap-panel {
   display: grid;
-  grid-column: 1 / -1;
+  grid-column: 1;
   gap: 16px;
   border: 1px solid #e4e7ec;
   border-radius: 8px;
@@ -1807,6 +1813,17 @@ h2 {
   .roadmap-panel {
     grid-column: 1;
     grid-row: auto;
+  }
+
+  .task-assistant-panel {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .task-assistant-messages {
+    max-height: 520px;
+    flex: none;
   }
 }
 
