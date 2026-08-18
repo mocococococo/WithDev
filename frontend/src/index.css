@@ -859,12 +859,19 @@ h2 {
 
 .task-detail {
   display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(360px, 2fr);
   gap: 18px;
   border: 1px solid #e4e7ec;
   border-radius: 8px;
   background: #ffffff;
   box-shadow: 0 16px 40px rgb(15 23 42 / 8%);
   padding: 24px;
+}
+
+.task-detail-header,
+.task-edit-form,
+.task-detail-grid {
+  grid-column: 1;
 }
 
 .task-create-panel {
@@ -1043,7 +1050,7 @@ h2 {
 
 .task-detail-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   border: 1px solid #e4e7ec;
   border-radius: 8px;
   overflow: hidden;
@@ -1059,11 +1066,13 @@ h2 {
   background: #fcfcfd;
 }
 
-.task-detail-grid div:nth-child(3n) {
+.task-detail-grid div:nth-child(2n) {
   border-right: 0;
 }
 
-.task-detail-grid div:nth-last-child(-n + 3) {
+.task-detail-grid div:last-child {
+  grid-column: 1 / -1;
+  border-right: 0;
   border-bottom: 0;
 }
 
@@ -1081,6 +1090,9 @@ h2 {
 
 .task-assistant-panel {
   display: grid;
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  align-self: start;
   gap: 16px;
   border: 1px solid #bfdbfe;
   border-radius: 8px;
@@ -1252,6 +1264,7 @@ h2 {
 
 .roadmap-panel {
   display: grid;
+  grid-column: 1 / -1;
   gap: 16px;
   border: 1px solid #e4e7ec;
   border-radius: 8px;
@@ -1781,6 +1794,22 @@ h2 {
   padding: 28px;
   box-shadow: 0 16px 40px rgb(15 23 42 / 8%);
 }
+
+@media (max-width: 1080px) {
+  .task-detail {
+    grid-template-columns: 1fr;
+  }
+
+  .task-detail-header,
+  .task-edit-form,
+  .task-detail-grid,
+  .task-assistant-panel,
+  .roadmap-panel {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+
 @media (max-width: 840px) {
   .auth-layout,
   .app-layout {
@@ -1901,8 +1930,9 @@ h2 {
   }
 
   .task-detail-grid div,
-  .task-detail-grid div:nth-child(3n),
-  .task-detail-grid div:nth-last-child(-n + 3) {
+  .task-detail-grid div:nth-child(2n),
+  .task-detail-grid div:last-child {
+    grid-column: auto;
     border-right: 0;
     border-bottom: 1px solid #e4e7ec;
   }
