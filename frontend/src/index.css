@@ -1079,6 +1079,177 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.task-assistant-panel {
+  display: grid;
+  gap: 16px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 18px;
+}
+
+.task-assistant-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.task-assistant-header > div {
+  display: grid;
+  gap: 4px;
+}
+
+.task-assistant-header p:last-child {
+  color: #475467;
+  line-height: 1.6;
+}
+
+.task-assistant-icon,
+.task-assistant-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.task-assistant-icon {
+  width: 44px;
+  height: 44px;
+}
+
+.task-assistant-empty {
+  display: grid;
+  gap: 12px;
+  border: 1px dashed #93c5fd;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+.task-assistant-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.task-assistant-suggestions .quiet-button {
+  margin-bottom: 0;
+}
+
+.task-assistant-messages {
+  display: grid;
+  max-height: 520px;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.task-assistant-message {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.task-assistant-message > div {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #dbe5f1;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px 14px;
+}
+
+.task-assistant-message.user > div {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.task-assistant-avatar {
+  width: 32px;
+  height: 32px;
+}
+
+.task-assistant-message.user .task-assistant-avatar {
+  background: #e4e7ec;
+  color: #344054;
+}
+
+.task-assistant-message p {
+  color: #344054;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.task-assistant-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-top: 1px solid #e4e7ec;
+  padding-top: 9px;
+}
+
+.task-assistant-sources span {
+  border-radius: 999px;
+  background: #f2f4f7;
+  padding: 4px 9px;
+  color: #475467;
+  font-size: 0.78rem;
+}
+
+.task-assistant-sources span:first-child {
+  background: transparent;
+  padding-left: 0;
+  font-weight: 900;
+}
+
+.task-assistant-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #475467;
+  font-size: 0.9rem;
+}
+
+.task-assistant-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.task-assistant-form textarea {
+  width: 100%;
+  min-height: 66px;
+  border: 1px solid #93c5fd;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #111827;
+  padding: 11px 12px;
+  outline: none;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.task-assistant-form textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 14%);
+}
+
+.task-assistant-form .primary-button {
+  min-height: 44px;
+}
+
+.task-assistant-note {
+  margin-top: -10px;
+  color: #667085;
+  font-size: 0.78rem;
+  text-align: right;
+}
+
 .roadmap-panel {
   display: grid;
   gap: 16px;
@@ -1709,6 +1880,7 @@ h2 {
   }
 
   .task-detail-header,
+  .task-assistant-header,
   .roadmap-panel-header,
   .roadmap-step-title {
     flex-direction: column;
@@ -1737,6 +1909,18 @@ h2 {
 
   .task-detail-grid div:last-child {
     border-bottom: 0;
+  }
+
+  .task-assistant-form {
+    grid-template-columns: 1fr;
+  }
+
+  .task-assistant-form .primary-button {
+    width: 100%;
+  }
+
+  .task-assistant-note {
+    text-align: left;
   }
 
   .room-grid div {

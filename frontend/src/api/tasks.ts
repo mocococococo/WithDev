@@ -49,6 +49,27 @@ export type TeamMemberSummary = {
   role: string;
 };
 
+export type TaskChatHistoryMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+export type TaskChatSource = {
+  title: string;
+  updated_at: number;
+};
+
+export type TaskChatAnswer = {
+  answer: string;
+  sources: TaskChatSource[];
+};
+
+export type TaskChatMessage = TaskChatHistoryMessage & {
+  id: string;
+  sources: TaskChatSource[];
+  created_at: number;
+};
+
 export type TaskUpdateInput = {
   title?: string;
   body?: string;
@@ -131,6 +152,27 @@ type ApiTeamMember = {
 
 type ApiTeamMemberListResponse = {
   members?: ApiTeamMember[];
+};
+
+type ApiTaskChatResponse = {
+  answer?: string;
+  sources?: Array<{
+    title: string;
+    updated_at: string;
+  }>;
+};
+
+type ApiTaskChatHistoryResponse = {
+  messages?: Array<{
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    sources: Array<{
+      title: string;
+      updated_at: string;
+    }>;
+    created_at: string;
+  }>;
 };
 
 export async function fetchTeamMembers(
@@ -250,6 +292,59 @@ export async function fetchTask(user: User, taskId: string): Promise<TeamTaskSum
   }
 
   return toTaskSummary(payload.task);
+}
+
+export async function askTaskAssistant(
+  user: User,
+  taskId: string,
+  message: string,
+): Promise<TaskChatAnswer> {
+  const response = await fetchWithAuth(user, `/api/tasks/${taskId}/chat`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(toTaskError(detail, response.status));
+  }
+
+  const payload = (await response.json()) as ApiTaskChatResponse;
+  if (typeof payload.answer !== 'string' || !Array.isArray(payload.sources)) {
+    throw new Error('AIチャットAPIのレスポンスを読み取れませんでした。');
+  }
+  return {
+    answer: payload.answer,
+    sources: payload.sources.map((source) => ({
+      title: source.title,
+      updated_at: toTimestamp(source.updated_at),
+    })),
+  };
+}
+
+export async function fetchTaskChatMessages(
+  user: User,
+  taskId: string,
+): Promise<TaskChatMessage[]> {
+  const response = await fetchWithAuth(user, `/api/tasks/${taskId}/chat/messages`);
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(toTaskError(detail, response.status));
+  }
+
+  const payload = (await response.json()) as ApiTaskChatHistoryResponse;
+  if (!Array.isArray(payload.messages)) {
+    throw new Error('AIチャット履歴APIのレスポンスを読み取れませんでした。');
+  }
+  return payload.messages.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    sources: message.sources.map((source) => ({
+      title: source.title,
+      updated_at: toTimestamp(source.updated_at),
+    })),
+    created_at: toTimestamp(message.created_at),
+  }));
 }
 
 export async function updateTask(
@@ -481,6 +576,25 @@ function toTaskError(detail: string, status: number) {
   }
   if (detail === 'invalid task status') {
     return 'タスクステータスが不正です。';
+  }
+  if (detail === 'chat message is required') {
+    return 'AIへの質問を入力してください。';
+  }
+  if (detail.startsWith('chat message must be')) {
+    return '質問は2,000文字以内で入力してください。';
+  }
+  if (detail === 'task chat is not configured') {
+    return 'AIチャットの設定が不足しています。管理者に確認してください。';
+  }
+  if (detail === 'task chat quota exceeded') {
+    return 'AIの利用上限に達しました。時間をおいて再試行してください。';
+  }
+  if (
+    detail === 'task chat request failed' ||
+    detail === 'task chat response was empty' ||
+    detail === 'task chat response was invalid'
+  ) {
+    return 'AIから回答を取得できませんでした。時間をおいて再試行してください。';
   }
   return 'タスク処理に失敗しました。時間をおいて再試行してください。';
 }

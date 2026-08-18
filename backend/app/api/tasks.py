@@ -20,6 +20,7 @@ from app.models.meeting import Meeting
 from app.models.minutes import MeetingMinutes
 from app.models.task import (
     Task,
+    TaskChatMessage,
     TaskGenerationRun,
     TaskMinutesImpact,
     TaskRoadmap,
@@ -38,13 +39,19 @@ from app.services.tasks_service import (
     generate_task_actions_from_minutes,
     get_task_generation_prompt_version,
 )
+from app.services.task_chat_service import (
+    MAX_CHAT_HISTORY_MESSAGES,
+    MAX_CHAT_MESSAGE_CHARS,
+    TaskChatError,
+    generate_task_chat_answer,
+)
 from app.services.task_roadmap_service import (
     TaskRoadmapGenerationError,
     generate_task_roadmap,
     get_task_roadmap_prompt_version,
     task_roadmap_input_hash,
 )
-from app.services.team_access_service import require_team_member
+from app.services.team_access_service import get_current_db_user, require_team_member
 
 
 router = APIRouter()
@@ -62,6 +69,7 @@ GENERATED_TASK_FIELDS = {
 ROADMAP_GENERATION_STALE_AFTER = timedelta(minutes=2)
 ROADMAP_GENERATION_CONCURRENCY = 2
 roadmap_generation_semaphore = asyncio.Semaphore(ROADMAP_GENERATION_CONCURRENCY)
+TASK_CHAT_HISTORY_LIMIT = 100
 logger = logging.getLogger(__name__)
 
 
@@ -116,6 +124,32 @@ class TaskListResponse(BaseModel):
 
 class TaskResponse(BaseModel):
     task: TaskBody
+
+
+class TaskChatRequest(BaseModel):
+    message: str
+
+
+class TaskChatSourceBody(BaseModel):
+    title: str
+    updated_at: datetime
+
+
+class TaskChatResponse(BaseModel):
+    answer: str
+    sources: list[TaskChatSourceBody]
+
+
+class TaskChatMessageBody(BaseModel):
+    id: UUID
+    role: str
+    content: str
+    sources: list[TaskChatSourceBody]
+    created_at: datetime
+
+
+class TaskChatHistoryResponse(BaseModel):
+    messages: list[TaskChatMessageBody]
 
 
 @dataclass(frozen=True)
@@ -523,6 +557,120 @@ async def get_task(
 ) -> TaskResponse:
     task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
     return TaskResponse(task=_task_body(task))
+
+
+@router.get("/tasks/{task_id}/chat/messages", response_model=TaskChatHistoryResponse)
+async def list_task_chat_messages(
+    task_id: UUID,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskChatHistoryResponse:
+    task = await _get_accessible_task(
+        session=session,
+        auth_user=auth_user,
+        task_id=task_id,
+    )
+    user = await get_current_db_user(session=session, auth_user=auth_user)
+    messages = await _get_task_chat_messages(
+        session=session,
+        task_id=task.id,
+        user_id=user.id,
+        limit=TASK_CHAT_HISTORY_LIMIT,
+    )
+    return TaskChatHistoryResponse(
+        messages=[_task_chat_message_body(message) for message in messages]
+    )
+
+
+@router.post("/tasks/{task_id}/chat", response_model=TaskChatResponse)
+async def chat_with_task_assistant(
+    task_id: UUID,
+    request: TaskChatRequest,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> TaskChatResponse:
+    task = await _get_accessible_task(
+        session=session,
+        auth_user=auth_user,
+        task_id=task_id,
+    )
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="chat message is required",
+        )
+    if len(message) > MAX_CHAT_MESSAGE_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"chat message must be {MAX_CHAT_MESSAGE_CHARS} characters or less",
+        )
+    user = await get_current_db_user(session=session, auth_user=auth_user)
+    previous_messages = await _get_task_chat_messages(
+        session=session,
+        task_id=task.id,
+        user_id=user.id,
+        limit=MAX_CHAT_HISTORY_MESSAGES,
+    )
+    history = [
+        {"role": item.role, "content": item.content}
+        for item in previous_messages
+    ]
+    team_minutes = await _get_team_minutes_for_chat(
+        session=session,
+        team_id=task.team_id,
+    )
+    related_minutes = await _get_task_related_minutes(session=session, task=task)
+    session.add(
+        TaskChatMessage(
+            task_id=task.id,
+            user_id=user.id,
+            role="user",
+            content=message,
+            sources=None,
+        )
+    )
+    await session.commit()
+    try:
+        result = await run_in_threadpool(
+            generate_task_chat_answer,
+            task=_task_chat_prompt_body(task),
+            message=message,
+            history=history,
+            team_minutes=team_minutes,
+            related_minutes_ids={str(minutes.id) for minutes in related_minutes},
+        )
+    except TaskChatError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_task_chat_error_message(exc),
+        ) from exc
+
+    sources = [
+        TaskChatSourceBody(
+            title=str(source.get("title") or "議事録"),
+            updated_at=source["updated_at"],
+        )
+        for source in result["sources"]
+        if source.get("updated_at") is not None
+    ]
+    session.add(
+        TaskChatMessage(
+            task_id=task.id,
+            user_id=user.id,
+            role="assistant",
+            content=result["answer"],
+            sources=[
+                {
+                    "title": source.title,
+                    "updated_at": source.updated_at.isoformat(),
+                }
+                for source in sources
+            ],
+        )
+    )
+    await session.commit()
+    return TaskChatResponse(answer=result["answer"], sources=sources)
 
 
 async def update_task(
@@ -1123,6 +1271,52 @@ async def _get_task_related_minutes(
     return list(result.scalars().all())
 
 
+async def _get_team_minutes_for_chat(
+    *,
+    session: AsyncSession,
+    team_id: UUID,
+) -> list[dict[str, object]]:
+    result = await session.execute(
+        select(MeetingMinutes, Meeting)
+        .join(Meeting, MeetingMinutes.meeting_id == Meeting.id)
+        .where(
+            Meeting.team_id == team_id,
+            Meeting.is_deleted.is_(False),
+            MeetingMinutes.is_deleted.is_(False),
+        )
+        .order_by(MeetingMinutes.updated_at.desc())
+        .limit(100)
+    )
+    return [
+        {
+            "minutes_id": str(minutes.id),
+            "title": minutes.title or meeting.title,
+            "body": minutes.body,
+            "updated_at": minutes.updated_at,
+        }
+        for minutes, meeting in result.all()
+    ]
+
+
+async def _get_task_chat_messages(
+    *,
+    session: AsyncSession,
+    task_id: UUID,
+    user_id: UUID,
+    limit: int,
+) -> list[TaskChatMessage]:
+    result = await session.execute(
+        select(TaskChatMessage)
+        .where(
+            TaskChatMessage.task_id == task_id,
+            TaskChatMessage.user_id == user_id,
+        )
+        .order_by(TaskChatMessage.created_at.desc(), TaskChatMessage.id.desc())
+        .limit(limit)
+    )
+    return list(reversed(result.scalars().all()))
+
+
 async def mark_minutes_roadmaps_for_regeneration(
     *,
     session: AsyncSession,
@@ -1215,6 +1409,42 @@ def _roadmap_task_prompt_body(task: Task) -> dict[str, object]:
         "assignee_name": task.assignee_name,
         "due_at": task.due_at.isoformat() if task.due_at else None,
     }
+
+
+def _task_chat_prompt_body(task: Task) -> dict[str, object]:
+    roadmap = task.roadmap
+    return {
+        "task_id": str(task.id),
+        "title": task.title,
+        "body": task.body,
+        "status": task.status,
+        "assignee_name": task.assignee_name,
+        "due_at": task.due_at.isoformat() if task.due_at else None,
+        "roadmap": {
+            "overview": roadmap.overview if roadmap else "",
+            "steps": [
+                {
+                    "title": step.title,
+                    "description": step.description,
+                    "status": step.status,
+                }
+                for step in _active_roadmap_steps(roadmap)
+            ]
+            if roadmap
+            else [],
+        },
+    }
+
+
+def _task_chat_error_message(error: TaskChatError) -> str:
+    messages = {
+        "configuration_error": "task chat is not configured",
+        "quota_exceeded": "task chat quota exceeded",
+        "request_failed": "task chat request failed",
+        "empty_response": "task chat response was empty",
+        "invalid_response": "task chat response was invalid",
+    }
+    return messages.get(error.reason, "task chat request failed")
 
 
 def _ensure_roadmap(task: Task) -> TaskRoadmap:
@@ -1920,6 +2150,25 @@ def _task_body(task: Task) -> TaskBody:
         created_at=task.created_at,
         updated_at=task.updated_at,
         roadmap=_roadmap_body(task.roadmap),
+    )
+
+
+def _task_chat_message_body(message: TaskChatMessage) -> TaskChatMessageBody:
+    sources: list[TaskChatSourceBody] = []
+    for source in message.sources or []:
+        if not isinstance(source, dict):
+            continue
+        title = str(source.get("title") or "議事録")
+        updated_at = source.get("updated_at")
+        if updated_at is None:
+            continue
+        sources.append(TaskChatSourceBody(title=title, updated_at=updated_at))
+    return TaskChatMessageBody(
+        id=message.id,
+        role=message.role,
+        content=message.content,
+        sources=sources,
+        created_at=message.created_at,
     )
 
 

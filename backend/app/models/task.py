@@ -12,6 +12,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -61,6 +62,37 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    chat_messages = relationship(
+        "TaskChatMessage",
+        back_populates="task",
+        cascade="all, delete-orphan",
+    )
+
+
+class TaskChatMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "task_chat_messages"
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="task_chat_message_role"),
+    )
+
+    task_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("tasks.id"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    sources: Mapped[list[dict] | None] = mapped_column(JSONB)
+
+    task = relationship("Task", back_populates="chat_messages")
+    user = relationship("User", back_populates="task_chat_messages")
 
 
 class TaskRoadmap(UUIDPrimaryKeyMixin, TimestampMixin, Base):

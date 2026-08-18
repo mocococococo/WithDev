@@ -19,6 +19,7 @@ from app.models.slack import (
 )
 from app.models.task import (
     Task,
+    TaskChatMessage,
     TaskGenerationRun,
     TaskMinutesImpact,
     TaskRoadmap,
@@ -45,6 +46,7 @@ __all__ = [
     "SlackOAuthState",
     "SlackPostLog",
     "Task",
+    "TaskChatMessage",
     "TaskGenerationRun",
     "TaskMinutesImpact",
     "TaskRoadmap",

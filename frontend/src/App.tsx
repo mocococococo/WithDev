@@ -31,8 +31,10 @@ import {
 import type { FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  askTaskAssistant,
   createTeamTask,
   deleteTask,
+  fetchTaskChatMessages,
   fetchTask,
   fetchMinutesTasks,
   fetchTeamMembers,
@@ -43,6 +45,8 @@ import {
   updateTask,
   type RoadmapSaveInput,
   type RoadmapSaveStepInput,
+  type TaskChatHistoryMessage,
+  type TaskChatSource,
   type TaskRoadmap,
   type TaskCreateInput,
   type TaskStatus,
@@ -1585,6 +1589,209 @@ type TaskDetailScreenProps = {
   onLogout: () => void;
 };
 
+type TaskAssistantMessage = TaskChatHistoryMessage & {
+  id: string;
+  sources?: TaskChatSource[];
+};
+
+const taskAssistantSuggestions = [
+  'まず何をすればいい？',
+  'どんな手順で進めればいい？',
+  'このタスクの完了条件を教えて',
+];
+
+function TaskAssistantPanel({ user, task }: { user: User; task: TeamTask }) {
+  const [messages, setMessages] = useState<TaskAssistantMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [isAnswering, setIsAnswering] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const messageId = useRef(0);
+  const messagesEnd = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let isCancelled = false;
+    setError(null);
+    setIsLoadingHistory(true);
+    void fetchTaskChatMessages(user, task.id)
+      .then((history) => {
+        if (isCancelled) return;
+        setMessages(
+          history.map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            sources: message.sources,
+          })),
+        );
+      })
+      .catch((err) => {
+        if (isCancelled) return;
+        setError(
+          err instanceof Error ? err.message : 'AIチャット履歴を取得できませんでした。',
+        );
+      })
+      .finally(() => {
+        if (!isCancelled) setIsLoadingHistory(false);
+      });
+    return () => {
+      isCancelled = true;
+    };
+  }, [task.id, user]);
+
+  useEffect(() => {
+    messagesEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [isAnswering, messages]);
+
+  const nextMessageId = (role: TaskAssistantMessage['role']) => {
+    messageId.current += 1;
+    return `${role}-${messageId.current}`;
+  };
+
+  const submitQuestion = async (value: string) => {
+    const question = value.trim();
+    if (!question || isAnswering || isLoadingHistory) return;
+
+    const userMessage: TaskAssistantMessage = {
+      id: nextMessageId('user'),
+      role: 'user',
+      content: question,
+    };
+    setMessages((current) => [...current, userMessage]);
+    setInput('');
+    setError(null);
+    setIsAnswering(true);
+    try {
+      const response = await askTaskAssistant(user, task.id, question);
+      setMessages((current) => [
+        ...current,
+        {
+          id: nextMessageId('assistant'),
+          role: 'assistant',
+          content: response.answer,
+          sources: response.sources,
+        },
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'AIから回答を取得できませんでした。');
+    } finally {
+      setIsAnswering(false);
+    }
+  };
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void submitQuestion(input);
+  };
+
+  return (
+    <section className="task-assistant-panel" aria-labelledby="task-assistant-title">
+      <div className="task-assistant-header">
+        <span className="task-assistant-icon">
+          <Sparkles size={22} />
+        </span>
+        <div>
+          <p className="eyebrow">AI assistant</p>
+          <h2 id="task-assistant-title">このタスクについてAIに相談</h2>
+          <p>保存済みのタスクとチームの議事録をもとに、次の行動を提案します。会話履歴は保存されます。</p>
+        </div>
+      </div>
+
+      {isLoadingHistory && (
+        <div className="task-assistant-thinking">
+          <Loader2 className="spin" size={18} />
+          <span>会話履歴を読み込んでいます</span>
+        </div>
+      )}
+
+      {!isLoadingHistory && messages.length === 0 && (
+        <div className="task-assistant-empty">
+          <strong>何から始めるか、具体的に相談できます。</strong>
+          <div className="task-assistant-suggestions">
+            {taskAssistantSuggestions.map((suggestion) => (
+              <button
+                className="quiet-button"
+                disabled={isAnswering}
+                key={suggestion}
+                type="button"
+                onClick={() => void submitQuestion(suggestion)}
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {messages.length > 0 && (
+        <div className="task-assistant-messages" aria-live="polite">
+          {messages.map((message) => (
+            <article className={`task-assistant-message ${message.role}`} key={message.id}>
+              <span className="task-assistant-avatar">
+                {message.role === 'assistant' ? (
+                  <Sparkles size={16} />
+                ) : (
+                  <CircleUserRound size={18} />
+                )}
+              </span>
+              <div>
+                <strong>{message.role === 'assistant' ? 'AI' : 'あなた'}</strong>
+                <p>{message.content}</p>
+                {message.sources && message.sources.length > 0 && (
+                  <div className="task-assistant-sources">
+                    <span>参照した議事録</span>
+                    {message.sources.map((source, index) => (
+                      <span key={`${source.title}-${source.updated_at}-${index}`}>
+                        {source.title} · {formatDate(source.updated_at)}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </article>
+          ))}
+          {isAnswering && (
+            <div className="task-assistant-thinking">
+              <Loader2 className="spin" size={18} />
+              <span>タスクと議事録を確認しています</span>
+            </div>
+          )}
+          <div ref={messagesEnd} />
+        </div>
+      )}
+
+      {error && <p className="error-text">{error}</p>}
+
+      <form className="task-assistant-form" onSubmit={handleSubmit}>
+        <textarea
+          aria-label="AIへの質問"
+          disabled={isAnswering || isLoadingHistory}
+          maxLength={2000}
+          placeholder="例: このタスクで、まず何をすればいい？"
+          rows={2}
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+        />
+        <button
+          className="primary-button"
+          disabled={isAnswering || isLoadingHistory || !input.trim()}
+          type="submit"
+        >
+          {isAnswering ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+          {isAnswering ? '回答中' : '質問する'}
+        </button>
+      </form>
+      <p className="task-assistant-note">Enterで送信、Shift + Enterで改行</p>
+    </section>
+  );
+}
+
 function TaskDetailScreen({
   user,
   team,
@@ -2110,6 +2317,8 @@ function TaskDetailScreen({
             <strong>{formatDateTime(task.updated_at)}</strong>
           </div>
         </div>
+
+        <TaskAssistantPanel key={task.id} user={user} task={task} />
 
         <section className="roadmap-panel">
           <div className="roadmap-panel-header">

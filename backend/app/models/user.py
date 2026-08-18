@@ -17,3 +17,4 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     team_memberships = relationship("TeamMember", back_populates="user")
     created_team_invites = relationship("TeamInvite", back_populates="created_by_user")
     assigned_tasks = relationship("Task", back_populates="assignee_user")
+    task_chat_messages = relationship("TaskChatMessage", back_populates="user")
