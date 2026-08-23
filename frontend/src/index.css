@@ -380,6 +380,10 @@ h2 {
   gap: 10px;
 }
 
+.toolbar-error {
+  margin: -8px 0 18px;
+}
+
 .team-content {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);

@@ -76,6 +76,7 @@ import {
 } from './api/slack';
 import {
   acceptTeamInvite,
+  createDemoTeam,
   createTeam,
   fetchInvitePreview,
   type InvitePreview,
@@ -509,13 +510,22 @@ type TeamSelectionScreenProps = {
   teams: UserTeamSummary[];
   onSelectTeam: (teamId: string) => void;
   onCreateTeam: (name: string) => Promise<void>;
+  onCreateDemoTeam: () => Promise<void>;
   onLogout: () => void;
 };
 
-function TeamSelectionScreen({ user, teams, onSelectTeam, onCreateTeam, onLogout }: TeamSelectionScreenProps) {
+function TeamSelectionScreen({
+  user,
+  teams,
+  onSelectTeam,
+  onCreateTeam,
+  onCreateDemoTeam,
+  onLogout,
+}: TeamSelectionScreenProps) {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [name, setName] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCreatingDemo, setIsCreatingDemo] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -534,6 +544,19 @@ function TeamSelectionScreen({ user, teams, onSelectTeam, onCreateTeam, onLogout
     }
   };
 
+  const handleCreateDemo = async () => {
+    if (isCreatingDemo) return;
+    setError(null);
+    setIsCreatingDemo(true);
+    try {
+      await onCreateDemoTeam();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'デモモードを開始できませんでした。');
+    } finally {
+      setIsCreatingDemo(false);
+    }
+  };
+
   return (
     <main className="app-layout">
       <header className="app-header">
@@ -549,11 +572,29 @@ function TeamSelectionScreen({ user, teams, onSelectTeam, onCreateTeam, onLogout
           <h2>所属チーム</h2>
           <p>{teams.length} 件のチームがあります。</p>
         </div>
-        <button className="primary-button" type="button" onClick={() => setShowCreateForm((value) => !value)}>
-          <Plus size={18} />
-          新しいチーム
-        </button>
+        <div className="toolbar-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => void handleCreateDemo()}
+            disabled={isCreatingDemo}
+          >
+            {isCreatingDemo ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+            デモモード
+          </button>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => setShowCreateForm((value) => !value)}
+            disabled={isCreatingDemo}
+          >
+            <Plus size={18} />
+            新しいチーム
+          </button>
+        </div>
       </section>
+
+      {error && !showCreateForm && <p className="error-text toolbar-error">{error}</p>}
 
       {showCreateForm && (
         <form className="create-form" onSubmit={handleSubmit}>
@@ -3481,6 +3522,13 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     navigateTo({ kind: 'team', teamId: team.team_id });
   };
 
+  const handleCreateDemoTeam = async () => {
+    setWorkspaceError(null);
+    const team = await createDemoTeam(currentUser);
+    setTeams((current) => [...current.filter((item) => item.team_id !== team.team_id), team]);
+    navigateTo({ kind: 'team', teamId: team.team_id });
+  };
+
   const handleAcceptInvite = async () => {
     if (!inviteToken) return;
     setIsAcceptingInvite(true);
@@ -3758,6 +3806,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       teams={teams}
       onSelectTeam={(teamId) => navigateTo({ kind: 'team', teamId })}
       onCreateTeam={handleCreateTeam}
+      onCreateDemoTeam={handleCreateDemoTeam}
       onLogout={handleLogout}
     />
   );

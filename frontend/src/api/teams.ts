@@ -35,6 +35,14 @@ export async function createTeam(user: User, name: string): Promise<UserTeamSumm
   return toTeam(payload.team);
 }
 
+export async function createDemoTeam(user: User): Promise<UserTeamSummary> {
+  const response = await fetchWithAuth(user, '/api/teams/demo', { method: 'POST' });
+  if (!response.ok) throw new Error(await teamError(response));
+  const payload = (await response.json()) as { team?: ApiTeam };
+  if (!payload.team) throw new Error('デモモードAPIの応答を読み取れませんでした。');
+  return toTeam(payload.team);
+}
+
 export async function fetchTeamInvites(user: User, teamId: string): Promise<TeamInvite[]> {
   const response = await fetchWithAuth(user, `/api/teams/${teamId}/invites`);
   if (!response.ok) throw new Error(await teamError(response));
@@ -96,6 +104,13 @@ async function teamError(response: Response): Promise<string> {
   if (detail === 'invite is expired') return 'この招待リンクの有効期限は切れています。';
   if (detail === 'invite is revoked') return 'この招待リンクは無効化されています。';
   if (detail === 'invite not found') return '招待リンクが見つかりません。';
+  if (detail === 'host email is required') return 'ログインユーザーのメールアドレスを確認できませんでした。';
+  if (detail === 'aiboard api is not configured') return 'ミーティング作成機能が設定されていません。';
+  if (detail === 'aiboard api key was rejected') return 'ミーティング作成機能の認証に失敗しました。';
+  if (detail.startsWith('aiboard request validation failed')) return 'デモミーティングを作成できませんでした。';
+  if (detail === 'failed to create aiboard meeting' || detail === 'invalid aiboard response') {
+    return 'デモミーティングを作成できませんでした。';
+  }
   if (response.status === 403) return 'この操作を行う権限がありません。';
   return '処理に失敗しました。時間をおいて再試行してください。';
 }

@@ -1,13 +1,19 @@
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthenticatedUser, verify_firebase_user
 from app.core.config import get_settings
 from app.db.session import get_db_session
+from app.services.aiboard_service import (
+    AiboardAuthenticationError,
+    AiboardConfigurationError,
+    AiboardRequestError,
+)
+from app.services.demo_mode_service import create_demo_mode_workspace
 from app.services.team_invite_service import (
     InviteSummary,
     TeamSummary,
@@ -97,6 +103,45 @@ async def post_team(
 ) -> CreateTeamResponse:
     team = await create_team(session=session, auth_user=auth_user, name=request.name)
     return CreateTeamResponse(team=to_team_response(team))
+
+
+@router.post("/teams/demo", response_model=CreateTeamResponse, status_code=status.HTTP_201_CREATED)
+async def post_demo_team(
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> CreateTeamResponse:
+    host_email = (auth_user.email or auth_user.claims.get("email") or "").strip()
+    if not host_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="host email is required",
+        )
+    try:
+        result = await create_demo_mode_workspace(
+            session=session,
+            auth_user=auth_user,
+            aiboard_api_base_url=settings.aiboard_api_base_url,
+            aiboard_api_key=settings.aiboard_api_key,
+        )
+    except AiboardConfigurationError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except AiboardAuthenticationError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except AiboardRequestError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    return CreateTeamResponse(team=to_team_response(result.team))
 
 
 @router.get("/teams/{team_id}/invites", response_model=InviteListResponse)
