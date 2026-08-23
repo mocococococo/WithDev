@@ -43,6 +43,14 @@ export async function createDemoTeam(user: User): Promise<UserTeamSummary> {
   return toTeam(payload.team);
 }
 
+export async function deleteTeam(user: User, teamId: string, name: string): Promise<void> {
+  const response = await fetchWithAuth(user, `/api/teams/${teamId}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) throw new Error(await teamError(response));
+}
+
 export async function fetchTeamInvites(user: User, teamId: string): Promise<TeamInvite[]> {
   const response = await fetchWithAuth(user, `/api/teams/${teamId}/invites`);
   if (!response.ok) throw new Error(await teamError(response));
@@ -101,6 +109,9 @@ async function teamError(response: Response): Promise<string> {
   const detail = await readErrorDetail(response);
   if (detail === 'team name is required') return 'チーム名を入力してください。';
   if (detail === 'team name is too long') return 'チーム名は255文字以内で入力してください。';
+  if (detail === 'team name does not match') return '入力したチーム名が一致しません。';
+  if (detail === 'team delete is forbidden') return 'チームを削除できるのはオーナーだけです。';
+  if (detail === 'team not found') return 'チームが見つからないか、すでに削除されています。';
   if (detail === 'invite is expired') return 'この招待リンクの有効期限は切れています。';
   if (detail === 'invite is revoked') return 'この招待リンクは無効化されています。';
   if (detail === 'invite not found') return '招待リンクが見つかりません。';

@@ -72,6 +72,33 @@ async def create_team(session: AsyncSession, auth_user: AuthenticatedUser, name:
     return TeamSummary(id=team.id, name=team.name, role="owner", member_count=1)
 
 
+async def delete_team(
+    session: AsyncSession,
+    auth_user: AuthenticatedUser,
+    team_id: UUID,
+    confirmation_name: str,
+) -> None:
+    user, team = await require_team_member(
+        session=session,
+        auth_user=auth_user,
+        team_id=team_id,
+    )
+    membership = await _active_membership(session, user.id, team_id)
+    if membership.role != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="team delete is forbidden",
+        )
+    if confirmation_name != team.name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="team name does not match",
+        )
+
+    team.is_deleted = True
+    await session.commit()
+
+
 async def list_team_invites(session: AsyncSession, auth_user: AuthenticatedUser, team_id: UUID) -> list[InviteSummary]:
     user, _ = await require_team_member(session=session, auth_user=auth_user, team_id=team_id)
     membership = await _active_membership(session, user.id, team_id)

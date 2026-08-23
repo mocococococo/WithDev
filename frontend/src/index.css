@@ -259,6 +259,12 @@ h2 {
   background: #ffe4e6;
 }
 
+.danger-button:disabled {
+  border-color: #fecdd3;
+  background: #fff1f2;
+  color: #fda4af;
+}
+
 .error-text {
   margin-top: 16px;
   color: #b42318;
@@ -1713,13 +1719,91 @@ h2 {
 }
 
 .invite-panel,
-.invite-confirmation {
+.invite-confirmation,
+.team-delete-panel {
   display: grid;
   gap: 14px;
   border: 1px solid #e4e7ec;
   border-radius: 8px;
   background: #ffffff;
   padding: 18px;
+}
+
+.team-delete-panel {
+  display: grid;
+  gap: 14px;
+  border-color: #fecaca;
+}
+
+.danger-icon {
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(15 23 42 / 55%);
+}
+
+.confirmation-dialog {
+  width: min(100%, 520px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 24px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgb(15 23 42 / 28%);
+}
+
+.confirmation-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.confirmation-dialog-header h2 {
+  margin-top: 6px;
+}
+
+.confirmation-warning {
+  margin-top: 20px;
+  color: #475467;
+  line-height: 1.65;
+}
+
+.confirmation-warning strong {
+  color: #be123c;
+}
+
+.confirmation-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.confirmation-form input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 0 12px;
+  outline: none;
+}
+
+.confirmation-form input:focus {
+  border-color: #fb7185;
+  box-shadow: 0 0 0 3px rgb(251 113 133 / 18%);
+}
+
+.confirmation-form .form-actions {
+  margin-top: 6px;
 }
 
 .invite-panel-header {
@@ -1894,7 +1978,8 @@ h2 {
   }
 
   .form-actions .primary-button,
-  .form-actions .secondary-button {
+  .form-actions .secondary-button,
+  .form-actions .danger-button {
     width: 100%;
   }
 

@@ -20,6 +20,7 @@ from app.services.team_invite_service import (
     accept_team_invite,
     create_team,
     create_team_invite,
+    delete_team,
     get_invite_preview,
     list_team_invites,
     revoke_team_invite,
@@ -42,6 +43,10 @@ class CreateTeamRequest(BaseModel):
 
 class CreateTeamResponse(BaseModel):
     team: TeamResponse
+
+
+class DeleteTeamRequest(BaseModel):
+    name: str = Field(max_length=255)
 
 
 class InviteCreatorResponse(BaseModel):
@@ -142,6 +147,22 @@ async def post_demo_team(
             detail=str(exc),
         ) from exc
     return CreateTeamResponse(team=to_team_response(result.team))
+
+
+@router.delete("/teams/{team_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_team_endpoint(
+    team_id: UUID,
+    request: DeleteTeamRequest,
+    auth_user: AuthenticatedUser = Depends(verify_firebase_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    await delete_team(
+        session=session,
+        auth_user=auth_user,
+        team_id=team_id,
+        confirmation_name=request.name,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/teams/{team_id}/invites", response_model=InviteListResponse)

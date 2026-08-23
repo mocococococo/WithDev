@@ -78,10 +78,12 @@ import {
   acceptTeamInvite,
   createDemoTeam,
   createTeam,
+  deleteTeam,
   fetchInvitePreview,
   type InvitePreview,
 } from './api/teams';
 import { TeamInvitePanel } from './components/TeamInvitePanel';
+import { TeamDeletePanel } from './components/TeamDeletePanel';
 import { AuthProvider, getReadableAuthError, useAuth } from './contexts/AuthContext';
 
 const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
@@ -1125,6 +1127,7 @@ type MeetingListScreenProps = {
   onOpenMeeting: (meetingId: string) => void;
   onOpenTasks: () => void;
   onOpenTask: (taskId: string) => void;
+  onDeleteTeam: (confirmationName: string) => Promise<void>;
   onLogout: () => void;
 };
 
@@ -1144,6 +1147,7 @@ function MeetingListScreen({
   onOpenMeeting,
   onOpenTasks,
   onOpenTask,
+  onDeleteTeam,
   onLogout,
 }: MeetingListScreenProps) {
   const [filter, setFilter] = useState<MeetingFilter>('all');
@@ -1256,6 +1260,9 @@ function MeetingListScreen({
             onOpenTasks={onOpenTasks}
             onOpenTask={onOpenTask}
           />
+          {team.role === 'owner' && (
+            <TeamDeletePanel teamName={team.name} onDelete={onDeleteTeam} />
+          )}
         </aside>
       </div>
 
@@ -3529,6 +3536,17 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     navigateTo({ kind: 'team', teamId: team.team_id });
   };
 
+  const handleDeleteTeam = async (confirmationName: string) => {
+    if (!selectedTeam) throw new Error('チームが選択されていません。');
+
+    await deleteTeam(currentUser, selectedTeam.team_id, confirmationName);
+    setTeams((current) => current.filter((team) => team.team_id !== selectedTeam.team_id));
+    setMeetings([]);
+    setTasks([]);
+    setTeamMembers([]);
+    navigateTo({ kind: 'home' }, true);
+  };
+
   const handleAcceptInvite = async () => {
     if (!inviteToken) return;
     setIsAcceptingInvite(true);
@@ -3795,6 +3813,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         onOpenTask={(taskId) =>
           navigateTo({ kind: 'task', teamId: selectedTeam.team_id, taskId })
         }
+        onDeleteTeam={handleDeleteTeam}
         onLogout={handleLogout}
       />
     );
