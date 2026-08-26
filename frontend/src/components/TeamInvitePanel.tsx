@@ -111,9 +111,7 @@ export function TeamInvitePanel({ user, teamId }: TeamInvitePanelProps) {
       {error && <p className="error-text">{error}</p>}
       {isLoading ? (
         <Loader2 className="spin" size={24} />
-      ) : visibleInvites.length === 0 ? (
-        <p className="task-empty">作成済みの招待リンクはありません。</p>
-      ) : (
+      ) : visibleInvites.length > 0 ? (
         <div className="invite-list">
           {visibleInvites.map((invite) => (
             <article className="invite-item" key={invite.id}>
@@ -131,7 +129,7 @@ export function TeamInvitePanel({ user, teamId }: TeamInvitePanelProps) {
             </article>
           ))}
         </div>
-      )}
+      ) : null}
     </section>
   );
 }
