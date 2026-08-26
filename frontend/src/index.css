@@ -312,8 +312,7 @@ h2 {
   white-space: nowrap;
 }
 
-.account-copy span,
-.team-main span {
+.account-copy span {
   overflow-wrap: anywhere;
   color: #667085;
   font-size: 0.9rem;

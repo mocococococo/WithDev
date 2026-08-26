@@ -496,7 +496,6 @@ function TeamCard({ team, onOpen }: TeamCardProps) {
       </span>
       <span className="team-main">
         <strong>{team.name}</strong>
-        <span>{team.team_id}</span>
       </span>
       <span className="team-meta">
         <span>{roleLabels[team.role]}</span>
