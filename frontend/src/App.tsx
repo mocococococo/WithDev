@@ -887,13 +887,12 @@ function TaskSidebar({
 
       <section className="my-task-panel">
         <div className="section-title-row">
-          <span className="section-icon">
-            <UserCheck size={22} />
-          </span>
-          <div>
-            <p className="eyebrow">My tasks</p>
-            <h2>自分の担当タスク</h2>
-          </div>
+        <span className="section-icon">
+          <UserCheck size={22} />
+        </span>
+        <div>
+          <h2>自分の担当タスク</h2>
+        </div>
         </div>
 
         {error && <p className="error-text">{error}</p>}
@@ -1420,13 +1419,13 @@ function TeamTaskScreen({
   onOpenTask,
   onLogout,
 }: TeamTaskScreenProps) {
-  const [statusFilter, setStatusFilter] = useState<TaskFilter>('all');
+  const [statusFilters, setStatusFilters] = useState<Set<TaskStatus>>(() => new Set());
   const [ownershipFilter, setOwnershipFilter] = useState<TaskOwnershipFilter>('all');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const visibleTasks = useMemo(() => {
     return sortTasks(
       tasks.filter((task) => {
-        const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
+        const matchesStatus = statusFilters.size === 0 || statusFilters.has(task.status);
         const matchesOwnership =
           ownershipFilter === 'all' ||
           (Boolean(currentUserId) &&
@@ -1435,7 +1434,7 @@ function TeamTaskScreen({
         return matchesStatus && matchesOwnership;
       }),
     );
-  }, [currentUserId, ownershipFilter, statusFilter, tasks]);
+  }, [currentUserId, ownershipFilter, statusFilters, tasks]);
   const taskColumns = useMemo(() => {
     const visibleTasksByAssignee = new globalThis.Map<string, TeamTask[]>();
     const unassignedTasks: TeamTask[] = [];
@@ -1486,9 +1485,26 @@ function TeamTaskScreen({
 
   const handleCreateTask = async (input: TaskCreateInput) => {
     await onCreateTask(input);
-    setStatusFilter('all');
+    setStatusFilters(new Set());
     setOwnershipFilter('all');
     setShowCreateForm(false);
+  };
+
+  const toggleStatusFilter = (filter: TaskFilter) => {
+    if (filter === 'all') {
+      setStatusFilters(new Set());
+      return;
+    }
+
+    setStatusFilters((current) => {
+      const next = new Set(current);
+      if (next.has(filter)) {
+        next.delete(filter);
+      } else {
+        next.add(filter);
+      }
+      return next;
+    });
   };
 
   return (
@@ -1554,9 +1570,14 @@ function TeamTaskScreen({
             {(Object.keys(taskFilterLabels) as TaskFilter[]).map((key) => (
               <button
                 key={key}
-                className={statusFilter === key ? 'filter-button active' : 'filter-button'}
+                className={
+                  (key === 'all' ? statusFilters.size === 0 : statusFilters.has(key))
+                    ? 'filter-button active'
+                    : 'filter-button'
+                }
                 type="button"
-                onClick={() => setStatusFilter(key)}
+                onClick={() => toggleStatusFilter(key)}
+                aria-pressed={key === 'all' ? statusFilters.size === 0 : statusFilters.has(key)}
               >
                 {taskFilterLabels[key]}
               </button>
