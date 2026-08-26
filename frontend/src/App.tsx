@@ -287,7 +287,6 @@ function AiboardSlackResultScreen() {
           </span>
           <span>WithDev</span>
         </div>
-        <p className="eyebrow">Aiboard Slack</p>
         <h1 id="aiboard-slack-result-title">
           {isSuccess ? 'Slack連携が完了しました' : 'Slack連携に失敗しました'}
         </h1>
@@ -568,7 +567,6 @@ function TeamSelectionScreen({
     <main className="app-layout">
       <header className="app-header">
         <div>
-          <p className="eyebrow">WithDev</p>
           <h1>チームを選択</h1>
         </div>
         <AccountMenu user={user} onLogout={onLogout} />
@@ -607,7 +605,7 @@ function TeamSelectionScreen({
         <form className="create-form" onSubmit={handleSubmit}>
           <div className="form-header">
             <span className="form-icon"><Users size={20} /></span>
-            <div><p className="eyebrow">Create team</p><h2>チームを作成</h2></div>
+            <div><h2>チームを作成</h2></div>
           </div>
           <label className="field-label" htmlFor="team-name">チーム名</label>
           <input id="team-name" value={name} maxLength={255} onChange={(event) => setName(event.target.value)} autoFocus />
@@ -1523,7 +1521,6 @@ function TeamTaskScreen({
             <ArrowLeft size={18} />
             ミーティング一覧へ
           </button>
-          <p className="eyebrow">Team tasks</p>
           <h1>全体タスク</h1>
           <p className="subtle-copy">{team.name}</p>
         </div>
@@ -1765,7 +1762,6 @@ function TaskAssistantPanel({ user, task }: { user: User; task: TeamTask }) {
           <Sparkles size={22} />
         </span>
         <div>
-          <p className="eyebrow">AI assistant</p>
           <h2 id="task-assistant-title">このタスクについてAIに相談</h2>
         </div>
       </div>
@@ -2234,7 +2230,6 @@ function TaskDetailScreen({
             <ArrowLeft size={18} />
             タスク一覧へ
           </button>
-          <p className="eyebrow">Task roadmap</p>
           <h1>{task.title}</h1>
           <p className="subtle-copy">{team.name}</p>
         </div>
@@ -2247,7 +2242,6 @@ function TaskDetailScreen({
             <ClipboardList size={26} />
           </span>
           <div>
-            <p className="eyebrow">Task</p>
             <h2>タスク内容</h2>
             <p>変更内容を確認してから保存できます。</p>
           </div>
@@ -2415,7 +2409,6 @@ function TaskDetailScreen({
                 <Map size={22} />
               </span>
               <div>
-                <p className="eyebrow">Roadmap</p>
                 <h2>完了までの道筋</h2>
                 {task.roadmap.overview && <p>{task.roadmap.overview}</p>}
               </div>
@@ -2802,7 +2795,6 @@ function SlackPostPanel({ user, team, meeting }: SlackPostPanelProps) {
           <Send size={22} />
         </span>
         <div>
-          <p className="eyebrow">Slack</p>
           <h2>Slackへ送信</h2>
         </div>
       </div>
@@ -2928,7 +2920,6 @@ function MeetingRelatedTasks({
           <ClipboardList size={22} />
         </span>
         <div>
-          <p className="eyebrow">Related tasks</p>
           <h2>この議事録から作成・更新されたタスク</h2>
         </div>
       </div>
@@ -2992,7 +2983,6 @@ function MeetingMinutesPanel({
             <FileText size={22} />
           </span>
           <div>
-            <p className="eyebrow">Minutes</p>
             <h2>議事録</h2>
           </div>
         </div>
@@ -3009,7 +2999,6 @@ function MeetingMinutesPanel({
             <FileText size={22} />
           </span>
           <div>
-            <p className="eyebrow">Minutes</p>
             <h2>議事録</h2>
           </div>
         </div>
@@ -3094,7 +3083,6 @@ function MeetingRoomScreen({
             <MessageSquareText size={24} />
           </span>
           <div>
-            <p className="eyebrow">Theme</p>
             <h2>{meeting.initial_theme}</h2>
           </div>
         </div>
@@ -3121,7 +3109,6 @@ function MeetingRoomScreen({
         {isActive ? (
           <section className="join-panel">
             <div>
-              <p className="eyebrow">Live meeting</p>
               <h2>進行中のミーティング</h2>
             </div>
             <button
@@ -3185,7 +3172,7 @@ function InviteAcceptanceScreen({ user, preview, isLoading, error, isAccepting, 
   return (
     <main className="app-layout invite-page">
       <header className="app-header">
-        <div><p className="eyebrow">WithDev</p><h1>チーム招待</h1></div>
+        <div><h1>チーム招待</h1></div>
         <AccountMenu user={user} onLogout={onLogout} />
       </header>
       <section className="invite-confirmation">
@@ -3196,7 +3183,6 @@ function InviteAcceptanceScreen({ user, preview, isLoading, error, isAccepting, 
         ) : preview ? (
           <>
             <span className="section-icon"><Users size={22} /></span>
-            <p className="eyebrow">Join team</p>
             <h2>{preview.team_name} に参加</h2>
             <p>参加すると、このチームのミーティング・議事録・タスクを利用できます。</p>
             <p className="subtle-copy">有効期限 {new Intl.DateTimeFormat('ja-JP', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(preview.expires_at))}</p>
@@ -3765,7 +3751,6 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       <main className="app-layout">
         <header className="app-header">
           <div>
-            <p className="eyebrow">WithDev</p>
             <h1>チームを選択</h1>
             <p className="error-text">{workspaceError}</p>
           </div>

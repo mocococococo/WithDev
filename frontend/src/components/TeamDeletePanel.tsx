@@ -91,7 +91,6 @@ export function TeamDeletePanel({ teamName, onDelete }: TeamDeletePanelProps) {
           >
             <div className="confirmation-dialog-header">
               <div>
-                <p className="eyebrow">Delete team</p>
                 <h2 id="team-delete-dialog-title">本当に削除しますか？</h2>
               </div>
               <button
