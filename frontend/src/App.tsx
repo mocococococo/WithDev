@@ -29,7 +29,7 @@ import {
   Video,
 } from 'lucide-react';
 import type { FormEvent } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   askTaskAssistant,
   createTeamTask,
@@ -90,6 +90,7 @@ const gitSha = import.meta.env.VITE_GIT_SHA ?? 'local';
 const appEnv = import.meta.env.VITE_APP_ENV ?? 'local';
 const ROADMAP_GENERATION_STALE_AFTER_MS = 2 * 60 * 1000;
 const MY_TASKS_PAGE_SIZE = 3;
+const MarkdownContent = lazy(() => import('./components/MarkdownContent'));
 
 type MeetingFilter = 'all' | MeetingStatus;
 type TaskFilter = 'all' | TaskStatus;
@@ -1759,7 +1760,6 @@ function TaskAssistantPanel({ user, task }: { user: User; task: TeamTask }) {
         <div>
           <p className="eyebrow">AI assistant</p>
           <h2 id="task-assistant-title">このタスクについてAIに相談</h2>
-          <p>保存済みのタスクとチームの議事録をもとに、次の行動を提案します。会話履歴は保存されます。</p>
         </div>
       </div>
 
@@ -1802,7 +1802,22 @@ function TaskAssistantPanel({ user, task }: { user: User; task: TeamTask }) {
               </span>
               <div>
                 <strong>{message.role === 'assistant' ? 'AI' : 'あなた'}</strong>
-                <p>{message.content}</p>
+                {message.role === 'assistant' ? (
+                  <div className="task-assistant-markdown">
+                    <Suspense
+                      fallback={
+                        <span className="task-assistant-thinking">
+                          <Loader2 className="spin" size={16} />
+                          回答を表示しています
+                        </span>
+                      }
+                    >
+                      <MarkdownContent content={message.content} />
+                    </Suspense>
+                  </div>
+                ) : (
+                  <p>{message.content}</p>
+                )}
                 {message.sources && message.sources.length > 0 && (
                   <div className="task-assistant-sources">
                     <span>参照した議事録</span>
