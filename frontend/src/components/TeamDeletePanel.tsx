@@ -71,7 +71,6 @@ export function TeamDeletePanel({ teamName, onDelete }: TeamDeletePanelProps) {
             <Trash2 size={20} />
           </span>
           <div>
-            <p className="eyebrow">Danger zone</p>
             <h2>チームの削除</h2>
           </div>
         </div>

@@ -26,6 +26,7 @@ export function TeamInvitePanel({ user, teamId }: TeamInvitePanelProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const visibleInvites = invites.filter((invite) => invite.status !== 'expired');
 
   useEffect(() => {
     let cancelled = false;
@@ -86,7 +87,6 @@ export function TeamInvitePanel({ user, teamId }: TeamInvitePanelProps) {
       <div className="invite-panel-header">
         <span className="section-icon"><Link2 size={20} /></span>
         <div>
-          <p className="eyebrow">Invite</p>
           <h2>招待リンク</h2>
         </div>
       </div>
@@ -111,11 +111,11 @@ export function TeamInvitePanel({ user, teamId }: TeamInvitePanelProps) {
       {error && <p className="error-text">{error}</p>}
       {isLoading ? (
         <Loader2 className="spin" size={24} />
-      ) : invites.length === 0 ? (
+      ) : visibleInvites.length === 0 ? (
         <p className="task-empty">作成済みの招待リンクはありません。</p>
       ) : (
         <div className="invite-list">
-          {invites.map((invite) => (
+          {visibleInvites.map((invite) => (
             <article className="invite-item" key={invite.id}>
               <div className="invite-item-row">
                 <span className={`invite-status ${invite.status}`}>{statusLabels[invite.status]}</span>

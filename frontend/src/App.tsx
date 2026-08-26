@@ -1031,7 +1031,6 @@ function SlackSettingsPanel({ user, team }: SlackSettingsPanelProps) {
           <PlugZap size={22} />
         </span>
         <div>
-          <p className="eyebrow">Slack</p>
           <h2>Slack連携</h2>
         </div>
       </div>
@@ -1171,7 +1170,6 @@ function MeetingListScreen({
             <ArrowLeft size={18} />
             チーム一覧へ
           </button>
-          <p className="eyebrow">Team</p>
           <h1>{team.name}</h1>
         </div>
         <AccountMenu user={user} onLogout={onLogout} />
