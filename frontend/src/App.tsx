@@ -137,6 +137,11 @@ const taskFilterLabels: Record<TaskFilter, string> = {
   in_progress: '進行中',
   done: '完了',
 };
+const defaultTaskStatusFilters: TaskStatus[] = ['todo', 'in_progress'];
+
+function createDefaultTaskStatusFilters() {
+  return new Set(defaultTaskStatusFilters);
+}
 
 const taskOwnershipFilterLabels: Record<TaskOwnershipFilter, string> = {
   all: '全員のタスク',
@@ -1420,7 +1425,9 @@ function TeamTaskScreen({
   onOpenTask,
   onLogout,
 }: TeamTaskScreenProps) {
-  const [statusFilters, setStatusFilters] = useState<Set<TaskStatus>>(() => new Set());
+  const [statusFilters, setStatusFilters] = useState<Set<TaskStatus>>(
+    createDefaultTaskStatusFilters,
+  );
   const [ownershipFilter, setOwnershipFilter] = useState<TaskOwnershipFilter>('all');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const visibleTasks = useMemo(() => {
@@ -1486,7 +1493,7 @@ function TeamTaskScreen({
 
   const handleCreateTask = async (input: TaskCreateInput) => {
     await onCreateTask(input);
-    setStatusFilters(new Set());
+    setStatusFilters(createDefaultTaskStatusFilters());
     setOwnershipFilter('all');
     setShowCreateForm(false);
   };
