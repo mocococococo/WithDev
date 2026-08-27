@@ -1934,10 +1934,12 @@ function TaskDetailScreen({
   const hasRoadmapUnsavedChanges =
     isRoadmapDirty || isStepEditorDirty || isNewStepInputDirty;
   const hasUnsavedChanges = isTaskDirty || hasRoadmapUnsavedChanges;
+  const isTaskMutationInProgress = isSavingTask || isSavingRoadmap;
   const isTaskFormLocked =
-    isSavingTask || isSavingRoadmap || isRoadmapLocked;
+    isTaskMutationInProgress || isRoadmapLocked;
+  const isAssigneeFormLocked = isTaskMutationInProgress;
   const isRoadmapFormLocked =
-    isSavingTask || isSavingRoadmap || isRoadmapLocked;
+    isTaskMutationInProgress || isRoadmapLocked;
   const completedSteps = roadmapDraft.filter((step) => step.status === 'done').length;
   const filteredMembers = useMemo(() => {
     const query = memberQuery.trim().toLowerCase();
@@ -2098,13 +2100,19 @@ function TaskDetailScreen({
     if (editingStepId === step.clientId) setEditingStepId(null);
   };
 
+  const hasOnlyAssigneeChanges =
+    isTaskDirty &&
+    draft.title === initialTaskDraft.title &&
+    draft.body === initialTaskDraft.body &&
+    draft.status === initialTaskDraft.status &&
+    draft.due_at === initialTaskDraft.due_at;
   const canSaveTask =
     isTaskDirty &&
     draft.title.trim().length > 0 &&
     draft.body.trim().length > 0 &&
     !isSavingTask &&
     !isSavingRoadmap &&
-    !isRoadmapLocked;
+    (!isRoadmapLocked || hasOnlyAssigneeChanges);
   const canSaveRoadmap =
     isRoadmapDirty &&
     editingStepId === null &&
@@ -2129,13 +2137,15 @@ function TaskDetailScreen({
     const taskChangesRoadmap =
       draft.title !== initialTaskDraft.title ||
       draft.body !== initialTaskDraft.body ||
-      draft.status !== initialTaskDraft.status;
+      draft.status !== initialTaskDraft.status ||
+      draft.assignee_user_id !== initialTaskDraft.assignee_user_id ||
+      draft.assignee_name !== initialTaskDraft.assignee_name;
     const discardRoadmapBeforeSave =
       taskChangesRoadmap && hasRoadmapUnsavedChanges;
     if (
       discardRoadmapBeforeSave &&
       !window.confirm(
-        'タスク内容または状態の保存によりロードマップが更新されます。未保存のロードマップ変更を破棄しますか？',
+        'タスク内容・状態・担当者の保存によりロードマップが更新されます。未保存のロードマップ変更を破棄しますか？',
       )
     ) {
       return;
@@ -2213,7 +2223,7 @@ function TaskDetailScreen({
   };
 
   const handleDelete = async () => {
-    if (isDeleting || isRoadmapLocked) return;
+    if (isDeleting || isTaskMutationInProgress) return;
     const confirmed = window.confirm('このタスクを削除しますか？');
     if (!confirmed) return;
 
@@ -2322,7 +2332,7 @@ function TaskDetailScreen({
                 <strong>{draft.assignee_name || '未担当'}</strong>
               </div>
               <input
-                disabled={isTaskFormLocked}
+                disabled={isAssigneeFormLocked}
                 value={memberQuery}
                 onChange={(event) => setMemberQuery(event.target.value)}
                 placeholder="メンバー名で検索"
@@ -2331,7 +2341,7 @@ function TaskDetailScreen({
             <div className="assignee-options">
               <button
                 className={!draft.assignee_user_id ? 'assignee-option active' : 'assignee-option'}
-                disabled={isTaskFormLocked}
+                disabled={isAssigneeFormLocked}
                 type="button"
                 onClick={() => handleSelectMember(null)}
               >
@@ -2346,7 +2356,7 @@ function TaskDetailScreen({
                       : 'assignee-option'
                   }
                   key={member.user_id}
-                  disabled={isTaskFormLocked}
+                  disabled={isAssigneeFormLocked}
                   type="button"
                   onClick={() => handleSelectMember(member)}
                 >
@@ -2363,7 +2373,7 @@ function TaskDetailScreen({
               className="danger-button"
               type="button"
               onClick={() => void handleDelete()}
-              disabled={isDeleting || isTaskFormLocked}
+              disabled={isDeleting || isTaskMutationInProgress}
             >
               {isDeleting ? <Loader2 className="spin" size={18} /> : <Trash2 size={18} />}
               {isDeleting ? '削除中' : 'タスクを削除'}
@@ -3474,11 +3484,13 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       expectedVersion?: number,
       reopen = false,
       forceRegenerate = false,
+      replaceExisting = false,
     ) => {
       const currentRequest = roadmapGenerationRequests.current.get(taskId);
-      if (currentRequest) return currentRequest;
+      if (currentRequest && !replaceExisting) return currentRequest;
 
-      const request = generateTaskRoadmap(
+      let request: Promise<void>;
+      request = generateTaskRoadmap(
         currentUser,
         taskId,
         reopen,
@@ -3493,7 +3505,9 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
           );
         })
         .finally(() => {
-          roadmapGenerationRequests.current.delete(taskId);
+          if (roadmapGenerationRequests.current.get(taskId) === request) {
+            roadmapGenerationRequests.current.delete(taskId);
+          }
         });
       roadmapGenerationRequests.current.set(taskId, request);
       return request;
@@ -3680,6 +3694,8 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
 
   const handleSaveTask = async (taskId: string, input: TaskUpdateInput) => {
     setTaskError(null);
+    const assigneeChanged =
+      input.assignee_user_id !== undefined || input.assignee_name !== undefined;
     const updatedTask = await updateTask(currentUser, taskId, input);
     const nextTask = withRoadmap(updatedTask);
     setTasks((currentTasks) =>
@@ -3692,6 +3708,9 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
       void launchRoadmapGeneration(
         updatedTask.id,
         updatedTask.roadmap.version,
+        false,
+        false,
+        assigneeChanged,
       ).catch((err) => {
         setTaskError(
           err instanceof Error ? err.message : 'ロードマップを再生成できませんでした。',
@@ -3731,6 +3750,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
   const handleDeleteTask = async (taskId: string) => {
     setTaskError(null);
     await deleteTask(currentUser, taskId);
+    roadmapGenerationRequests.current.delete(taskId);
     setTasks((currentTasks) => currentTasks.filter((task) => task.id !== taskId));
     if (selectedTeam) {
       navigateTo({ kind: 'teamTasks', teamId: selectedTeam.team_id }, true);

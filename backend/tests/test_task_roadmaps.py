@@ -21,6 +21,7 @@ from app.api.tasks import (
     _sync_task_completion_from_steps,
     _task_body,
     _task_roadmap_generation_error_message,
+    delete_task,
     generate_task_roadmap_endpoint,
     run_task_roadmap_generation,
     save_task_roadmap,
@@ -204,6 +205,99 @@ class RoadmapCompletionTests(unittest.TestCase):
 
         self.assertEqual(first.status, "done")
         self.assertEqual(second.status, "done")
+
+
+class TaskMutationDuringGenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_assignee_update_invalidates_generation(self) -> None:
+        task = make_task(status="in_progress")
+        old_token = uuid4()
+        task.roadmap.generation_status = "generating"
+        task.roadmap.generation_token = old_token
+        task.roadmap.generation_started_at = datetime.now(timezone.utc)
+        assignee_id = uuid4()
+        assignee = SimpleNamespace(id=assignee_id, display_name="新しい担当者")
+        session = make_api_session(task)
+
+        with (
+            patch(
+                "app.api.tasks._get_locked_accessible_task",
+                new_callable=AsyncMock,
+                return_value=task,
+            ),
+            patch(
+                "app.api.tasks._get_active_team_members",
+                new_callable=AsyncMock,
+                return_value=[(assignee, "member")],
+            ),
+        ):
+            response = await update_task(
+                task_id=task.id,
+                request=TaskUpdateRequest(assignee_user_id=assignee_id),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        self.assertEqual(task.assignee_user_id, assignee_id)
+        self.assertEqual(task.assignee_name, "新しい担当者")
+        self.assertEqual(task.roadmap.generation_status, "pending")
+        self.assertNotEqual(task.roadmap.generation_token, old_token)
+        self.assertIsNone(task.roadmap.generation_started_at)
+        self.assertEqual(task.roadmap.version, 2)
+        self.assertEqual(response.task.assignee_user_id, assignee_id)
+        session.commit.assert_awaited_once()
+
+    async def test_non_assignee_update_remains_locked_during_generation(self) -> None:
+        task = make_task(status="in_progress")
+        task.roadmap.generation_status = "generating"
+        task.roadmap.generation_token = uuid4()
+        task.roadmap.generation_started_at = datetime.now(timezone.utc)
+        session = make_api_session(task)
+
+        with (
+            patch(
+                "app.api.tasks._get_locked_accessible_task",
+                new_callable=AsyncMock,
+                return_value=task,
+            ),
+            self.assertRaises(HTTPException) as raised,
+        ):
+            await update_task(
+                task_id=task.id,
+                request=TaskUpdateRequest(title="生成中には変更しない"),
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail, "roadmap generation is in progress")
+        self.assertEqual(task.title, "リリースする")
+        session.commit.assert_not_awaited()
+
+    async def test_delete_invalidates_generation(self) -> None:
+        task = make_task(status="in_progress")
+        task.roadmap.generation_status = "generating"
+        task.roadmap.generation_token = uuid4()
+        task.roadmap.generation_started_at = datetime.now(timezone.utc)
+        session = make_api_session(task)
+
+        with patch(
+            "app.api.tasks._get_locked_accessible_task",
+            new_callable=AsyncMock,
+            return_value=task,
+        ):
+            response = await delete_task(
+                task_id=task.id,
+                auth_user=SimpleNamespace(),
+                session=session,
+            )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertTrue(task.is_deleted)
+        self.assertEqual(task.roadmap.generation_status, "failed")
+        self.assertIsNone(task.roadmap.generation_token)
+        self.assertIsNone(task.roadmap.generation_started_at)
+        self.assertEqual(task.roadmap.version, 2)
+        session.commit.assert_awaited_once()
 
 
 class RoadmapStepApiTests(unittest.IsolatedAsyncioTestCase):

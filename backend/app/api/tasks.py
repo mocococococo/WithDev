@@ -679,19 +679,27 @@ async def update_task(
     auth_user: AuthenticatedUser = Depends(verify_firebase_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> TaskResponse:
-    task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
+    task = await _get_locked_accessible_task(
+        session=session,
+        auth_user=auth_user,
+        task_id=task_id,
+    )
     roadmap = _ensure_roadmap(task)
-    _reject_changes_while_roadmap_locked(roadmap)
-    members = await _get_active_team_members(session=session, team_id=task.team_id)
-    member_map = {user.id: user for user, _role in members}
-
     if hasattr(request, "model_dump"):
         payload = request.model_dump(exclude_unset=True)
     else:
         payload = request.dict(exclude_unset=True)
+    if _roadmap_is_locked(roadmap) and not _is_assignee_only_update(payload):
+        _reject_changes_while_roadmap_locked(roadmap)
+
+    members = await _get_active_team_members(session=session, team_id=task.team_id)
+    member_map = {user.id: user for user, _role in members}
+
     previous_status = task.status
+    previous_assignee = (task.assignee_user_id, task.assignee_name)
     source_changed = any(field in payload for field in ("title", "body"))
     _apply_task_patch(task=task, payload=payload, member_map=member_map)
+    assignee_changed = previous_assignee != (task.assignee_user_id, task.assignee_name)
 
     if task.status == "done":
         _complete_all_roadmap_steps(roadmap)
@@ -701,10 +709,11 @@ async def update_task(
             detail="reopen the task through its roadmap",
         )
 
-    if source_changed and task.status == "done":
+    roadmap_input_changed = source_changed or assignee_changed
+    if roadmap_input_changed and task.status == "done":
         if previous_status == "done":
             roadmap.has_source_updates = True
-    elif source_changed:
+    elif roadmap_input_changed:
         _mark_roadmap_pending(roadmap)
 
     task = await _commit_and_reload_task(session=session, task=task)
@@ -1005,8 +1014,12 @@ async def delete_task(
     auth_user: AuthenticatedUser = Depends(verify_firebase_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
-    task = await _get_accessible_task(session=session, auth_user=auth_user, task_id=task_id)
-    _reject_changes_while_roadmap_locked(_ensure_roadmap(task))
+    task = await _get_locked_accessible_task(
+        session=session,
+        auth_user=auth_user,
+        task_id=task_id,
+    )
+    _cancel_roadmap_generation(_ensure_roadmap(task))
     task.is_deleted = True
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1157,6 +1170,7 @@ async def _finish_task_roadmap_generation_failed(
             session=session,
             task_id=task_id,
             for_update=True,
+            include_deleted=True,
         )
         if task is None:
             raise HTTPException(
@@ -1186,6 +1200,7 @@ async def _finish_task_roadmap_generation_ready(
             session=session,
             task_id=task_id,
             for_update=True,
+            include_deleted=True,
         )
         if task is None:
             raise HTTPException(
@@ -1215,11 +1230,15 @@ async def _get_task_for_roadmap_generation(
     session: AsyncSession,
     task_id: UUID,
     for_update: bool = False,
+    include_deleted: bool = False,
 ) -> Task | None:
+    filters = [Task.id == task_id]
+    if not include_deleted:
+        filters.append(Task.is_deleted.is_(False))
     statement = (
         select(Task)
         .options(selectinload(Task.roadmap).selectinload(TaskRoadmap.steps))
-        .where(Task.id == task_id, Task.is_deleted.is_(False))
+        .where(*filters)
         .execution_options(populate_existing=True)
     )
     if for_update:
@@ -1459,11 +1478,29 @@ def _ensure_roadmap(task: Task) -> TaskRoadmap:
 
 
 def _reject_changes_while_roadmap_locked(roadmap: TaskRoadmap) -> None:
-    if roadmap.generation_status in {"pending", "generating"}:
+    if _roadmap_is_locked(roadmap):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="roadmap generation is in progress",
         )
+
+
+def _roadmap_is_locked(roadmap: TaskRoadmap) -> bool:
+    return roadmap.generation_status in {"pending", "generating"}
+
+
+def _is_assignee_only_update(payload: dict[str, object]) -> bool:
+    return bool(payload) and set(payload).issubset({"assignee_user_id", "assignee_name"})
+
+
+def _cancel_roadmap_generation(roadmap: TaskRoadmap) -> None:
+    if not _roadmap_is_locked(roadmap):
+        return
+    roadmap.generation_status = "failed"
+    roadmap.generation_error = None
+    roadmap.generation_token = None
+    roadmap.generation_started_at = None
+    roadmap.version += 1
 
 
 def _mark_roadmap_pending(roadmap: TaskRoadmap) -> UUID:
@@ -1688,6 +1725,27 @@ async def _get_accessible_task(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
 
     await require_team_member(session=session, auth_user=auth_user, team_id=task.team_id)
+    return task
+
+
+async def _get_locked_accessible_task(
+    *,
+    session: AsyncSession,
+    auth_user: AuthenticatedUser,
+    task_id: UUID,
+) -> Task:
+    await _get_accessible_task(
+        session=session,
+        auth_user=auth_user,
+        task_id=task_id,
+    )
+    task = await _get_task_for_roadmap_generation(
+        session=session,
+        task_id=task_id,
+        for_update=True,
+    )
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
     return task
 
 

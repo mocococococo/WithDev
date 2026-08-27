@@ -246,6 +246,51 @@ class RoadmapPostgresIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(roadmap.overview, "新しい結果")
         self.assertEqual([step.title for step in roadmap.steps], ["新しいステップ"])
 
+    async def test_late_result_after_task_deletion_is_discarded(self) -> None:
+        task_id = await self._create_pending_task()
+        claim = await _claim_task_roadmap_generation(
+            task_id=task_id,
+            request=RoadmapGenerateRequest(expected_version=1),
+        )
+        self.assertIsNotNone(claim.generation_input)
+
+        async with self.sessions() as session:
+            task_result = await session.execute(
+                select(Task).where(Task.id == task_id).with_for_update()
+            )
+            task = task_result.scalar_one()
+            roadmap_result = await session.execute(
+                select(TaskRoadmap).where(TaskRoadmap.task_id == task_id)
+            )
+            roadmap = roadmap_result.scalar_one()
+            task.is_deleted = True
+            roadmap.generation_status = "failed"
+            roadmap.generation_token = None
+            roadmap.generation_started_at = None
+            roadmap.version += 1
+            await session.commit()
+
+        await _finish_task_roadmap_generation_ready(
+            task_id=task_id,
+            generation_token=claim.generation_input.generation_token,
+            generation_input=claim.generation_input,
+            generated={
+                "overview": "削除後に到着した結果",
+                "steps": [
+                    {
+                        "existing_step_id": None,
+                        "title": "保存してはいけない",
+                        "description": "削除済みタスクの結果。",
+                    }
+                ],
+            },
+        )
+
+        roadmap = await self._get_roadmap(task_id)
+        self.assertEqual(roadmap.generation_status, "failed")
+        self.assertEqual(roadmap.overview, "")
+        self.assertEqual(roadmap.steps, [])
+
     async def test_quota_failure_is_persisted_without_a_fallback_step(self) -> None:
         task_id = await self._create_pending_task()
         claim = await _claim_task_roadmap_generation(
