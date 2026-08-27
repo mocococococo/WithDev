@@ -657,6 +657,20 @@ h2 {
   gap: 10px;
 }
 
+.my-task-panel .task-list.compact {
+  max-height: min(360px, 34vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+
+.my-task-panel .task-list.compact:focus-visible {
+  border-radius: 8px;
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
 .my-task-load-more {
   width: 100%;
 }

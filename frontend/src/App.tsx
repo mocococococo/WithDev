@@ -891,12 +891,12 @@ function TaskSidebar({
 
       <section className="my-task-panel">
         <div className="section-title-row">
-        <span className="section-icon">
-          <UserCheck size={22} />
-        </span>
-        <div>
-          <h2>自分の担当タスク</h2>
-        </div>
+          <span className="section-icon">
+            <UserCheck size={22} />
+          </span>
+          <div>
+            <h2>自分の担当タスク</h2>
+          </div>
         </div>
 
         {error && <p className="error-text">{error}</p>}
@@ -908,7 +908,12 @@ function TaskSidebar({
           </div>
         ) : myTasks.length > 0 ? (
           <>
-            <div className="task-list compact">
+            <div
+              className="task-list compact"
+              role="region"
+              aria-label="自分の担当タスク一覧"
+              tabIndex={0}
+            >
               {visibleMyTasks.map((task) => (
                 <TaskCard key={task.id} task={task} compact onOpen={() => onOpenTask(task.id)} />
               ))}
