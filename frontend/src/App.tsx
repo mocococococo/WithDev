@@ -1811,7 +1811,7 @@ function TaskAssistantPanel({ user, task }: { user: User; task: TeamTask }) {
               <div>
                 <strong>{message.role === 'assistant' ? 'AI' : 'あなた'}</strong>
                 {message.role === 'assistant' ? (
-                  <div className="task-assistant-markdown">
+                  <div className="task-assistant-markdown markdown-content">
                     <Suspense
                       fallback={
                         <span className="task-assistant-thinking">
@@ -3022,7 +3022,11 @@ function MeetingMinutesPanel({
         </button>
       </div>
 
-      <p className="minutes-body">{meeting.minutes}</p>
+      <div className="minutes-body minutes-markdown markdown-content">
+        <Suspense fallback={<p>議事録を表示しています。</p>}>
+          <MarkdownContent content={meeting.minutes} />
+        </Suspense>
+      </div>
       {taskGenerationError && <p className="error-text">{taskGenerationError}</p>}
       {meeting.minutes_id && (
         <MeetingRelatedTasks

@@ -1235,74 +1235,74 @@ h2 {
   white-space: pre-wrap;
 }
 
-.task-assistant-markdown {
+.markdown-content {
   min-width: 0;
   overflow-x: auto;
   color: #344054;
   line-height: 1.7;
 }
 
-.task-assistant-markdown > :first-child {
+.markdown-content > :first-child {
   margin-top: 0;
 }
 
-.task-assistant-markdown > :last-child {
+.markdown-content > :last-child {
   margin-bottom: 0;
 }
 
-.task-assistant-markdown h1,
-.task-assistant-markdown h2,
-.task-assistant-markdown h3,
-.task-assistant-markdown h4 {
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
   margin: 16px 0 8px;
   color: #111827;
   line-height: 1.35;
 }
 
-.task-assistant-markdown h1 {
+.markdown-content h1 {
   font-size: 1.3rem;
 }
 
-.task-assistant-markdown h2 {
+.markdown-content h2 {
   font-size: 1.16rem;
 }
 
-.task-assistant-markdown h3,
-.task-assistant-markdown h4 {
+.markdown-content h3,
+.markdown-content h4 {
   font-size: 1rem;
 }
 
-.task-assistant-markdown p,
-.task-assistant-markdown ul,
-.task-assistant-markdown ol,
-.task-assistant-markdown blockquote,
-.task-assistant-markdown pre,
-.task-assistant-markdown table {
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol,
+.markdown-content blockquote,
+.markdown-content pre,
+.markdown-content table {
   margin: 8px 0;
 }
 
-.task-assistant-markdown ul,
-.task-assistant-markdown ol {
+.markdown-content ul,
+.markdown-content ol {
   padding-left: 22px;
 }
 
-.task-assistant-markdown li + li {
+.markdown-content li + li {
   margin-top: 4px;
 }
 
-.task-assistant-markdown blockquote {
+.markdown-content blockquote {
   border-left: 3px solid #93c5fd;
   padding-left: 12px;
   color: #475467;
 }
 
-.task-assistant-markdown a {
+.markdown-content a {
   color: #1d4ed8;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.task-assistant-markdown code {
+.markdown-content code {
   border-radius: 4px;
   background: #eef2f6;
   padding: 2px 5px;
@@ -1311,38 +1311,38 @@ h2 {
   font-size: 0.88em;
 }
 
-.task-assistant-markdown pre {
+.markdown-content pre {
   overflow-x: auto;
   border-radius: 8px;
   background: #111827;
   padding: 12px;
 }
 
-.task-assistant-markdown pre code {
+.markdown-content pre code {
   background: transparent;
   padding: 0;
   color: #f9fafb;
 }
 
-.task-assistant-markdown table {
+.markdown-content table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.9rem;
 }
 
-.task-assistant-markdown th,
-.task-assistant-markdown td {
+.markdown-content th,
+.markdown-content td {
   border: 1px solid #dbe5f1;
   padding: 7px 9px;
   text-align: left;
   vertical-align: top;
 }
 
-.task-assistant-markdown th {
+.markdown-content th {
   background: #eff6ff;
 }
 
-.task-assistant-markdown input[type='checkbox'] {
+.markdown-content input[type='checkbox'] {
   margin-right: 6px;
 }
 
@@ -1778,6 +1778,11 @@ h2 {
   color: #344054;
   line-height: 1.7;
   white-space: pre-wrap;
+}
+
+.minutes-markdown {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .room-grid {
