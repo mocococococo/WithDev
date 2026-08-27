@@ -15,6 +15,7 @@ from app.api.tasks import (
 from app.models.task import Task, TaskChatMessage, TaskRoadmap, TaskRoadmapStep
 from app.services.task_chat_service import (
     TaskChatError,
+    generate_task_chat_answer,
     parse_task_chat_response,
     select_relevant_minutes,
 )
@@ -61,6 +62,19 @@ def make_task() -> Task:
 
 
 class TaskChatServiceTests(unittest.TestCase):
+    @staticmethod
+    def _chat_input() -> dict[str, object]:
+        return {
+            "task": {
+                "task_id": "task-1",
+                "title": "リリース手順を確認する",
+                "body": "本番リリース前に確認する。",
+            },
+            "message": "まず何をすればいい？",
+            "history": [],
+            "team_minutes": [],
+        }
+
     def test_selects_related_and_relevant_team_minutes(self) -> None:
         task = {"title": "本番リリース", "body": "チェックリストを確認する"}
         team_minutes = [
@@ -123,6 +137,118 @@ class TaskChatServiceTests(unittest.TestCase):
                 '{"source_minutes_ids": []}',
                 available_sources={},
             )
+
+    @patch("app.services.task_chat_service.genai.configure")
+    @patch("app.services.task_chat_service.genai.GenerativeModel")
+    @patch("app.services.task_chat_service.get_settings")
+    def test_retries_invalid_response_once(
+        self,
+        get_settings,
+        generative_model,
+        _configure,
+    ) -> None:
+        get_settings.return_value = SimpleNamespace(
+            gemini_api_key="test-key",
+            gemini_model="test-model",
+        )
+        model = generative_model.return_value
+        model.generate_content.side_effect = [
+            SimpleNamespace(
+                parts=[object()],
+                text='{"source_minutes_ids": [], "private": "do-not-log"}',
+                candidates=[SimpleNamespace(finish_reason="STOP")],
+            ),
+            SimpleNamespace(
+                parts=[object()],
+                text='{"answer": "まず担当者を確認してください。", "source_minutes_ids": []}',
+                candidates=[SimpleNamespace(finish_reason="STOP")],
+            ),
+        ]
+
+        with self.assertLogs("app.services.task_chat_service", level="WARNING") as logs:
+            result = generate_task_chat_answer(**self._chat_input())
+
+        self.assertEqual(result["answer"], "まず担当者を確認してください。")
+        self.assertEqual(model.generate_content.call_count, 2)
+        retry_prompt = model.generate_content.call_args_list[1].args[0]
+        self.assertIn("再出力指示", retry_prompt)
+        self.assertNotIn("do-not-log", "\n".join(logs.output))
+
+    @patch("app.services.task_chat_service.genai.configure")
+    @patch("app.services.task_chat_service.genai.GenerativeModel")
+    @patch("app.services.task_chat_service.get_settings")
+    def test_retries_empty_response_once(
+        self,
+        get_settings,
+        generative_model,
+        _configure,
+    ) -> None:
+        get_settings.return_value = SimpleNamespace(
+            gemini_api_key="test-key",
+            gemini_model="test-model",
+        )
+        model = generative_model.return_value
+        model.generate_content.side_effect = [
+            SimpleNamespace(parts=[], text="", candidates=[]),
+            SimpleNamespace(
+                parts=[object()],
+                text='{"answer": "確認してください。", "source_minutes_ids": []}',
+                candidates=[SimpleNamespace(finish_reason="STOP")],
+            ),
+        ]
+
+        result = generate_task_chat_answer(**self._chat_input())
+
+        self.assertEqual(result["answer"], "確認してください。")
+        self.assertEqual(model.generate_content.call_count, 2)
+
+    @patch("app.services.task_chat_service.genai.configure")
+    @patch("app.services.task_chat_service.genai.GenerativeModel")
+    @patch("app.services.task_chat_service.get_settings")
+    def test_does_not_retry_request_failure(
+        self,
+        get_settings,
+        generative_model,
+        _configure,
+    ) -> None:
+        get_settings.return_value = SimpleNamespace(
+            gemini_api_key="test-key",
+            gemini_model="test-model",
+        )
+        model = generative_model.return_value
+        model.generate_content.side_effect = RuntimeError("network unavailable")
+
+        with self.assertRaises(TaskChatError) as raised:
+            generate_task_chat_answer(**self._chat_input())
+
+        self.assertEqual(raised.exception.reason, "request_failed")
+        self.assertEqual(model.generate_content.call_count, 1)
+
+    @patch("app.services.task_chat_service.genai.configure")
+    @patch("app.services.task_chat_service.genai.GenerativeModel")
+    @patch("app.services.task_chat_service.get_settings")
+    def test_stops_after_second_invalid_response(
+        self,
+        get_settings,
+        generative_model,
+        _configure,
+    ) -> None:
+        get_settings.return_value = SimpleNamespace(
+            gemini_api_key="test-key",
+            gemini_model="test-model",
+        )
+        model = generative_model.return_value
+        model.generate_content.return_value = SimpleNamespace(
+            parts=[object()],
+            text='{"source_minutes_ids": []}',
+            candidates=[SimpleNamespace(finish_reason="STOP")],
+        )
+
+        with self.assertRaises(TaskChatError) as raised:
+            generate_task_chat_answer(**self._chat_input())
+
+        self.assertEqual(raised.exception.reason, "invalid_response")
+        self.assertEqual(model.generate_content.call_count, 2)
 
 
 class TaskChatApiTests(unittest.IsolatedAsyncioTestCase):

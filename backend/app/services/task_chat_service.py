@@ -16,6 +16,16 @@ MAX_CHAT_HISTORY_MESSAGE_CHARS = 4_000
 MAX_TEAM_MINUTES = 10
 MAX_TEAM_MINUTES_CHARS = 24_000
 GEMINI_REQUEST_TIMEOUT_SECONDS = 45
+TASK_CHAT_MAX_ATTEMPTS = 2
+TASK_CHAT_RETRY_INSTRUCTION = """
+
+再出力指示:
+前回の出力はAPIの検証条件を満たしませんでした。次の条件を必ず守って再出力してください。
+- 指定されたJSONオブジェクト以外は出力しない。
+- answer は空でない文字列とし、改行を含める場合も正しいJSON文字列にする。
+- source_minutes_ids は必ず配列にする。
+- answer は原則1,000文字以内にする。
+"""
 TASK_CHAT_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -66,40 +76,83 @@ def generate_task_chat_answer(
         user_message=message,
     )
 
-    try:
-        genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.gemini_model)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                max_output_tokens=2048,
-                response_mime_type="application/json",
-                response_schema=TASK_CHAT_RESPONSE_SCHEMA,
-            ),
-            request_options=genai.types.RequestOptions(
-                retry=None,
-                timeout=GEMINI_REQUEST_TIMEOUT_SECONDS,
-            ),
-        )
-    except Exception as exc:
-        reason = "quota_exceeded" if _is_gemini_quota_error(exc) else "request_failed"
-        logger.warning(
-            "Task chat Gemini request failed task_id=%s reason=%s: %s",
-            task.get("task_id"),
-            reason,
-            exc,
-        )
-        raise TaskChatError("Gemini request failed", reason=reason) from exc
-
-    if not getattr(response, "parts", None):
-        raise TaskChatError("Gemini returned an empty response", reason="empty_response")
-
     available_sources = {
         str(minutes.get("minutes_id")): minutes
         for minutes in selected_minutes
         if minutes.get("minutes_id")
     }
-    return parse_task_chat_response(response.text, available_sources=available_sources)
+    try:
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel(settings.gemini_model)
+    except Exception as exc:
+        logger.warning(
+            "Task chat Gemini client setup failed task_id=%s error_type=%s",
+            task.get("task_id"),
+            type(exc).__name__,
+        )
+        raise TaskChatError("Gemini request failed", reason="request_failed") from exc
+
+    for attempt in range(1, TASK_CHAT_MAX_ATTEMPTS + 1):
+        attempt_prompt = (
+            prompt if attempt == 1 else f"{prompt}{TASK_CHAT_RETRY_INSTRUCTION}"
+        )
+        try:
+            response = model.generate_content(
+                attempt_prompt,
+                generation_config=genai.GenerationConfig(
+                    max_output_tokens=2048,
+                    response_mime_type="application/json",
+                    response_schema=TASK_CHAT_RESPONSE_SCHEMA,
+                ),
+                request_options=genai.types.RequestOptions(
+                    retry=None,
+                    timeout=GEMINI_REQUEST_TIMEOUT_SECONDS,
+                ),
+            )
+        except Exception as exc:
+            reason = "quota_exceeded" if _is_gemini_quota_error(exc) else "request_failed"
+            logger.warning(
+                "Task chat Gemini request failed "
+                "task_id=%s attempt=%s reason=%s error_type=%s",
+                task.get("task_id"),
+                attempt,
+                reason,
+                type(exc).__name__,
+            )
+            raise TaskChatError("Gemini request failed", reason=reason) from exc
+
+        try:
+            try:
+                response_parts = getattr(response, "parts", None)
+            except Exception as exc:
+                raise TaskChatError("Gemini response parts are unavailable") from exc
+            if not response_parts:
+                raise TaskChatError(
+                    "Gemini returned an empty response",
+                    reason="empty_response",
+                )
+            try:
+                response_text = response.text
+            except Exception as exc:
+                raise TaskChatError("Gemini response text is unavailable") from exc
+            return parse_task_chat_response(
+                response_text,
+                available_sources=available_sources,
+            )
+        except TaskChatError as exc:
+            logger.warning(
+                "Task chat Gemini response rejected "
+                "task_id=%s attempt=%s reason=%s finish_reason=%s response_chars=%s",
+                task.get("task_id"),
+                attempt,
+                exc.reason,
+                _response_finish_reason(response),
+                _response_char_count(response),
+            )
+            if attempt == TASK_CHAT_MAX_ATTEMPTS:
+                raise
+
+    raise TaskChatError("Gemini response retry exhausted")
 
 
 def parse_task_chat_response(
@@ -250,3 +303,27 @@ def _is_gemini_quota_error(error: Exception) -> bool:
     if isinstance(error, ResourceExhausted):
         return True
     return str(error).lstrip().startswith("429 ")
+
+
+def _response_finish_reason(response: object) -> str:
+    try:
+        candidates = getattr(response, "candidates", None)
+    except Exception:
+        return "unknown"
+    if not candidates:
+        return "unknown"
+    try:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+    except Exception:
+        return "unknown"
+    if finish_reason is None:
+        return "unknown"
+    return str(getattr(finish_reason, "name", finish_reason))
+
+
+def _response_char_count(response: object) -> int:
+    try:
+        text = getattr(response, "text", "")
+    except Exception:
+        return 0
+    return len(text) if isinstance(text, str) else 0

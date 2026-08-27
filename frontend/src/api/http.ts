@@ -3,7 +3,9 @@ import type { User } from 'firebase/auth';
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
 
 export function buildApiUrl(path: string) {
-  return `${apiBaseUrl}${path}`;
+  const normalizedBaseUrl = apiBaseUrl.replace(/\/+$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${normalizedBaseUrl}${normalizedPath}`;
 }
 
 export async function readErrorDetail(response: Response) {

@@ -2739,7 +2739,11 @@ function SlackPostPanel({ user, team, meeting }: SlackPostPanelProps) {
     setError(null);
     setSuccess(null);
 
-    void fetchSlackChannels(user, team.team_id)
+    void fetchSlackConnection(user, team.team_id)
+      .then((connection) => {
+        if (isCancelled || !connection.connected) return [];
+        return fetchSlackChannels(user, team.team_id);
+      })
       .then((nextChannels) => {
         if (isCancelled) return;
         setChannels(nextChannels);
