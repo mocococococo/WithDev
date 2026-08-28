@@ -30,6 +30,10 @@ class _FakeSession:
 
 
 class DemoModeServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_uses_sports_festival_meeting_defaults(self) -> None:
+        self.assertEqual(DEMO_MEETING_TITLE, "電通大体育祭の企画チームミーティング")
+        self.assertEqual(DEMO_MEETING_THEME, "体育祭の参加人数を増やし、盛り上げる")
+
     @patch("app.services.demo_mode_service.create_aiboard_meeting", new_callable=AsyncMock)
     @patch("app.services.demo_mode_service.upsert_authenticated_user", new_callable=AsyncMock)
     async def test_creates_three_member_team_and_meeting(

@@ -14,8 +14,8 @@ from app.services.user_initialization_service import upsert_authenticated_user
 
 
 DEMO_TEAM_NAME = "デモチーム"
-DEMO_MEETING_TITLE = "新しいサービス"
-DEMO_MEETING_THEME = "サービスに関する発案"
+DEMO_MEETING_TITLE = "電通大体育祭の企画チームミーティング"
+DEMO_MEETING_THEME = "体育祭の参加人数を増やし、盛り上げる"
 DEMO_MEMBERS = (
     ("demo-member-1@withdev.invalid", "デモメンバー1"),
     ("demo-member-2@withdev.invalid", "デモメンバー2"),
