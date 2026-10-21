@@ -27,6 +27,7 @@ from app.models.task import (
 )
 from app.models.team import Team, TeamInvite, TeamMember
 from app.models.user import User
+from app.models.task_assignment import TaskAssignment, TaskAssignmentAttempt, TaskAssignmentEvent
 
 
 __all__ = [
@@ -55,4 +56,7 @@ __all__ = [
     "TeamInvite",
     "TeamMember",
     "User",
+    "TaskAssignment",
+    "TaskAssignmentAttempt",
+    "TaskAssignmentEvent",
 ]

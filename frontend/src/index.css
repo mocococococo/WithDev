@@ -2207,3 +2207,28 @@ h2 {
     border-bottom: 0;
   }
 }
+.assignment-panel {
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px solid var(--border-color, #dce3e9);
+  border-radius: 12px;
+}
+
+.assignment-panel h2 { margin: 0 0 12px; font-size: 1.1rem; }
+.assignment-panel li { margin: 8px 0; }
+
+.assignment-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.assignment-start-action { max-width: 380px; }
+.assignment-start-message { margin: 8px 0 0; font-size: 0.875rem; line-height: 1.6; }
+.assignment-toolbar-actions { align-items: flex-start; }
+
+@media (max-width: 840px) {
+  .toolbar-actions .assignment-start-action { width: 100%; max-width: none; }
+}

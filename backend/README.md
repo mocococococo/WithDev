@@ -2,6 +2,9 @@
 
 WithDev の FastAPI バックエンドです。
 
+Slackで未割り当てタスクの担当を調整する機能の仕様・導入手順は
+[担当調整エージェント](../docs/task-assignment-spec.md)を参照してください。
+
 ## MVP
 
 初期バックエンドでは、議事録生成APIを提供します。

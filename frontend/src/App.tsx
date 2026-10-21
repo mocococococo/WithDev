@@ -1,4 +1,6 @@
 import type { User } from 'firebase/auth';
+import { TaskAssignmentPanel } from './components/TaskAssignmentPanel';
+import { AssignmentStartButton } from './components/AssignmentStartButton';
 import {
   ArrowLeft,
   CalendarDays,
@@ -1433,6 +1435,9 @@ function TeamTaskScreen({
   );
   const [ownershipFilter, setOwnershipFilter] = useState<TaskOwnershipFilter>('all');
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const unassignedCount = tasks.filter((task) =>
+    !task.assignee_user_id && !task.assignee_name && task.status !== 'done',
+  ).length;
   const visibleTasks = useMemo(() => {
     return sortTasks(
       tasks.filter((task) => {
@@ -1539,14 +1544,24 @@ function TeamTaskScreen({
             {visibleTasks.length} 件を表示 / 全 {tasks.length} 件
           </p>
         </div>
-        <button
-          className="primary-button"
-          type="button"
-          onClick={() => setShowCreateForm((value) => !value)}
-        >
-          <Plus size={18} />
-          新規タスク
-        </button>
+        <div className="toolbar-actions assignment-toolbar-actions">
+          <AssignmentStartButton
+            key={team.team_id}
+            user={user}
+            target={{ kind: 'team', id: team.team_id }}
+            label={`未担当を一括打診（${unassignedCount}件）`}
+            description="絞り込みに関係なく、チーム全体の未担当・未完了タスクが対象です。"
+            disabled={isLoading || unassignedCount === 0}
+          />
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => setShowCreateForm((value) => !value)}
+          >
+            <Plus size={18} />
+            新規タスク
+          </button>
+        </div>
       </section>
 
       {showCreateForm && (
@@ -1655,6 +1670,7 @@ type TaskDetailScreenProps = {
   members: TeamMemberSummary[];
   onBack: () => void;
   onSaveTask: (taskId: string, input: TaskUpdateInput) => Promise<TeamTask>;
+  onRefreshTask: (taskId: string) => Promise<void>;
   onSaveRoadmap: (taskId: string, input: RoadmapSaveInput) => Promise<TeamTask>;
   onDeleteTask: (taskId: string) => Promise<void>;
   onGenerateRoadmap: (
@@ -1888,6 +1904,7 @@ function TaskDetailScreen({
   members,
   onBack,
   onSaveTask,
+  onRefreshTask,
   onSaveRoadmap,
   onDeleteTask,
   onGenerateRoadmap,
@@ -2415,6 +2432,7 @@ function TaskDetailScreen({
           </div>
         </div>
 
+        <TaskAssignmentPanel key={`assignment-${task.id}`} user={user} taskId={task.id} onAssigned={onRefreshTask} />
         <TaskAssistantPanel key={task.id} user={user} task={task} />
 
         <section className="roadmap-panel">
@@ -3692,6 +3710,11 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
     });
   };
 
+  const handleRefreshTask = useCallback(async (taskId: string) => {
+    const refreshedTask = withRoadmap(await fetchTask(currentUser, taskId));
+    setTasks((currentTasks) => currentTasks.map((task) => task.id === taskId ? refreshedTask : task));
+  }, [currentUser]);
+
   const handleSaveTask = async (taskId: string, input: TaskUpdateInput) => {
     setTaskError(null);
     const assigneeChanged =
@@ -3803,6 +3826,7 @@ function WorkspaceApp({ currentUser }: WorkspaceAppProps) {
         members={teamMembers}
         onBack={() => navigateTo({ kind: 'teamTasks', teamId: selectedTeam.team_id })}
         onSaveTask={handleSaveTask}
+        onRefreshTask={handleRefreshTask}
         onSaveRoadmap={handleSaveRoadmap}
         onDeleteTask={handleDeleteTask}
         onGenerateRoadmap={handleGenerateRoadmap}

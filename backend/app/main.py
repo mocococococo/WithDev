@@ -8,6 +8,7 @@ from app.api.minutes import router as minutes_router
 from app.api.notion import router as notion_router
 from app.api.slack import router as slack_router
 from app.api.tasks import router as tasks_router
+from app.api.task_assignments import router as task_assignments_router
 from app.api.teams import router as teams_router
 from app.core.config import get_settings
 
@@ -31,6 +32,7 @@ app.include_router(meetings_router, prefix="/api", tags=["meetings"])
 app.include_router(notion_router, prefix="/api", tags=["notion"])
 app.include_router(slack_router, prefix="/api", tags=["slack"])
 app.include_router(tasks_router, prefix="/api", tags=["tasks"])
+app.include_router(task_assignments_router, prefix="/api", tags=["task-assignments"])
 app.include_router(teams_router, prefix="/api", tags=["teams"])
 app.include_router(aiboard_router, prefix="/api/external/aiboard", tags=["aiboard"])
 

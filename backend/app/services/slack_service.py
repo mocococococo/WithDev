@@ -18,6 +18,9 @@ SLACK_BOT_SCOPES = (
     "channels:join",
     "chat:write.public",
     "files:write",
+    "im:write",
+    "im:history",
+    "users:read.email",
 )
 SLACK_MESSAGE_LIMIT = 39000
 MARKDOWN_FILENAME_MAX_STEM_LENGTH = 120
@@ -144,14 +147,21 @@ async def post_message(
     bot_access_token: str,
     channel_id: str,
     text: str,
+    blocks: list[dict] | None = None,
+    thread_ts: str | None = None,
+    client_msg_id: str | None = None,
 ) -> SlackPostResult:
+    message: dict = {"channel": channel_id, "text": _truncate_message(text)}
+    if blocks is not None:
+        message["blocks"] = blocks
+    if thread_ts:
+        message["thread_ts"] = thread_ts
+    if client_msg_id:
+        message["client_msg_id"] = client_msg_id
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
             SLACK_POST_MESSAGE_URL,
-            json={
-                "channel": channel_id,
-                "text": _truncate_message(text),
-            },
+            json=message,
             headers={"Authorization": f"Bearer {bot_access_token}"},
         )
 

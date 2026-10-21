@@ -28,6 +28,7 @@ from app.models.task import (
 )
 from app.models.team import TeamMember
 from app.models.user import User
+from app.models.task_assignment import TaskAssignment
 from app.services.notion_repository import (
     create_notion_sync_log,
     get_active_notion_connection,
@@ -471,6 +472,8 @@ async def generate_team_tasks_for_minutes(
                 member_map=member_map,
             )
             session.add(task)
+            if not task.assignee_user_id and not task.assignee_name and task.status != "done":
+                task.assignment = TaskAssignment(status="pending")
             session.add(
                 TaskMinutesImpact(
                     task=task,

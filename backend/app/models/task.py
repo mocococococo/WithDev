@@ -54,6 +54,7 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     source_minutes = relationship("MeetingMinutes", back_populates="source_tasks")
     assignee_user = relationship("User", back_populates="assigned_tasks")
     notion_sync_logs = relationship("NotionSyncLog", back_populates="task")
+    assignment = relationship("TaskAssignment", back_populates="task", uselist=False)
     minutes_impacts = relationship("TaskMinutesImpact", back_populates="task")
     roadmap = relationship(
         "TaskRoadmap",

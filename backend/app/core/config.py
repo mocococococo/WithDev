@@ -15,6 +15,7 @@ class Settings:
     slack_client_id: str | None
     slack_client_secret: str | None
     slack_redirect_uri: str | None
+    slack_signing_secret: str | None
     notion_client_id: str | None
     notion_client_secret: str | None
     notion_redirect_uri: str | None
@@ -37,6 +38,7 @@ class Settings:
         self.slack_client_id = os.getenv("SLACK_CLIENT_ID")
         self.slack_client_secret = os.getenv("SLACK_CLIENT_SECRET")
         self.slack_redirect_uri = os.getenv("SLACK_REDIRECT_URI")
+        self.slack_signing_secret = os.getenv("SLACK_SIGNING_SECRET")
         self.notion_client_id = os.getenv("NOTION_CLIENT_ID")
         self.notion_client_secret = os.getenv("NOTION_CLIENT_SECRET")
         self.notion_redirect_uri = os.getenv("NOTION_REDIRECT_URI")
