@@ -1,5 +1,7 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
 import httpx
@@ -18,6 +20,35 @@ from app.services.slack_service import (
     build_minutes_markdown_filename,
     upload_markdown_file,
 )
+
+
+class SlackOAuthScopeTests(unittest.IsolatedAsyncioTestCase):
+    @patch("app.api.slack.require_team_member", new_callable=AsyncMock)
+    async def test_reconnect_requests_the_configured_bot_profile_and_email_scopes(self, require_member):
+        from app.api.slack import start_slack_oauth
+
+        session = MagicMock()
+        session.commit = AsyncMock()
+        settings = SimpleNamespace(
+            slack_client_id="test-client", slack_redirect_uri="https://backend.example.com/api/slack/oauth/callback",
+        )
+        with patch("app.api.slack.settings", settings):
+            result = await start_slack_oauth(
+                team_id=UUID("c50461c7-06d4-4c5e-b20e-38e8292cbe07"),
+                auth_user=SimpleNamespace(), session=session,
+            )
+
+        url = urlparse(result.url)
+        query = parse_qs(url.query)
+        self.assertEqual(url.path, "/oauth/v2/authorize")
+        self.assertEqual(set(query["scope"][0].split(",")), {
+            "channels:join", "channels:read", "chat:write", "chat:write.public", "files:write",
+            "im:history", "im:write", "users:read", "users:read.email",
+        })
+        self.assertNotIn("user_scope", query)
+        self.assertEqual(query["state"][0], session.add.call_args.args[0].state)
+        self.assertEqual(query["redirect_uri"][0], settings.slack_redirect_uri)
+        session.commit.assert_awaited_once()
 
 
 class MinutesMarkdownTests(unittest.TestCase):

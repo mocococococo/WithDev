@@ -20,6 +20,7 @@ SLACK_BOT_SCOPES = (
     "files:write",
     "im:write",
     "im:history",
+    "users:read",
     "users:read.email",
 )
 SLACK_MESSAGE_LIMIT = 39000

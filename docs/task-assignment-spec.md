@@ -33,7 +33,7 @@
 
 1. バックエンドの環境変数に `SLACK_SIGNING_SECRET` を設定する。既存のGemini・Slack OAuth設定も必要。
 2. `cd backend` で `alembic upgrade head` を実行する。
-3. SlackアプリのBot Token Scopesに既存の権限に加えて `im:write`、`im:history`、`users:read.email` を追加し、WithDevからSlackを再接続する。
+3. SlackアプリのBot Token Scopesに既存の権限に加えて `im:write`、`im:history`、`users:read`、`users:read.email` を追加し、WithDevからSlackを再接続する。WithDevが要求する権限一覧は `channels:join`、`channels:read`、`chat:write`、`chat:write.public`、`files:write`、`im:history`、`im:write`、`users:read`、`users:read.email`。
 4. SlackアプリのInteractivityを有効にし、Request URLを `https://<backend>/api/slack/interactions` に設定する。
 5. Event Subscriptionsを有効にし、Request URLを `https://<backend>/api/slack/events` に設定する。Bot Eventに `message.im` を追加する。
 6. APIとは別の常駐プロセスとして `python -m app.workers.task_assignment` を起動する。
