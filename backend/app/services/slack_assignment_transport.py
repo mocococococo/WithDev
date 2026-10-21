@@ -44,7 +44,7 @@ def assignment_blocks(*, text: str, attempt_id: UUID, due_at: datetime | None) -
             {"type": "button", "action_id": ACTION_PREFIX + action,
              "text": {"type": "plain_text", "text": label}, "value": str(attempt_id),
              **({"style": "primary"} if action == "accept" else {})}
-            for action, label in [("accept", "担当する"), ("consult", "期限を相談する"), ("decline", "今回は難しい")]
+            for action, label in [("accept", "担当する"), ("decline", "今回は難しい")]
         ]},
     ]
 
