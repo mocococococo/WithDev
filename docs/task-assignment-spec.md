@@ -40,6 +40,34 @@
 
 ワーカーを起動すると保存済みの未処理キューから打診を開始する。ワーカーの起動前に、Slackアプリの設定と再接続を完了させる。
 
+## 開発環境のCloud Runへの導入
+
+`.github/workflows/deploy-backend-dev.yml` がAPIと同じイメージを使って、Cloud Run Worker Poolに常駐ワーカーをデプロイする。
+初回は以下の順に設定する。Secretの値はチャット・ソースコード・GitHub Variablesに貼り付けない。
+
+1. Slackアプリの **Basic Information → App Credentials → Signing Secret** を、開発プロジェクトのGoogle Cloud Secret Managerに保存する。例のSecret IDは `withdev-slack-signing-secret-dev`。SlackのClient Secretとは別の値。
+2. そのSecretの権限で、既存の実行サービスアカウント `withdev-backend-runtime@<GCP_PROJECT_ID_DEV>.iam.gserviceaccount.com` に `Secret Manager Secret Accessor` を付与する。
+3. GitHubリポジトリの **Settings → Secrets and variables → Actions → Variables** に以下を設定する。
+
+   | Variable | 値 |
+   |---|---|
+   | `SLACK_SIGNING_SECRET_SECRET_DEV` | Secret ID（例：`withdev-slack-signing-secret-dev`）。Signing Secretの値ではない |
+   | `DEPLOY_ASSIGNMENT_WORKER_DEV` | 初回は `false` |
+   | `CLOUD_RUN_ASSIGNMENT_WORKER_POOL_DEV` | 任意。省略時は `withdev-assignment-dev` |
+
+4. このコード変更を反映して、GitHub Actionsの **Deploy Backend Development** を実行する。マイグレーションとAPIを更新し、APIに `SLACK_SIGNING_SECRET` が渡る。この段階ではワーカーを起動しない。
+5. 上の導入手順に従い、Slackの権限追加、Interactivity・Event SubscriptionsのURL設定、WithDevからのSlack再接続を完了させる。URLにはフロントエンドではなくバックエンドのURLを使う。
+6. `DEPLOY_ASSIGNMENT_WORKER_DEV` を `true` に変更し、**Deploy Backend Development** をもう一度実行する。API更新後にWorker Poolを作成・更新し、ワーカーを1台起動する。以降、`true` の間はバックエンドのデプロイ時にワーカーも更新する。
+7. Cloud Runの **Worker pools → withdev-assignment-dev → Logs** で `Assignment worker acquired leadership` を確認する。打診ボタンを押したタスクの状態が「担当候補を選定中」「返答待ち」に進むことを確認する。
+
+デプロイ用サービスアカウントにはWorker Poolの作成・更新権限（例：Cloud Run Developer）と、実行サービスアカウントのService Account User権限が必要。既存のカスタムロールを使っている場合はWorker Pool操作の権限も追加する。
+
+Worker Poolは継続的なバックグラウンド処理向けで、HTTP待受は不要。APIのリクエストがなくてもキューを処理する。設定は1 vCPU・512MiB・1台で、待機中も稼働時間に応じて課金される。[Worker Poolの公式説明](https://docs.cloud.google.com/run/docs/deploy-worker-pools)、[料金](https://cloud.google.com/run/pricing)。
+
+`DEPLOY_ASSIGNMENT_WORKER_DEV=false` はデプロイ工程をスキップする設定であり、起動済みのWorker Poolは停止しない。停止する場合はCloud RunのWorker Poolのインスタンス数を0に変更する。
+
+デプロイの切り替え中に新旧ワーカーが重なっても、新しいワーカーはDBロックの取得を待ち、同時にキューを処理しない。終了シグナルを受け取ったワーカーは新しい処理を開始せず、DB接続を解放する。
+
 ## テスト
 
 ```bash

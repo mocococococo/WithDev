@@ -34,6 +34,29 @@ jobs:
       - name: Setup Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Configure task assignment deployment
+        env:
+          SIGNING_SECRET_NAME: ${{ vars.SLACK_SIGNING_SECRET_SECRET_DEV }}
+          DEPLOY_WORKER: ${{ vars.DEPLOY_ASSIGNMENT_WORKER_DEV }}
+        run: |
+          case "$DEPLOY_WORKER" in
+            true|false|"") ;;
+            *) echo "::error::DEPLOY_ASSIGNMENT_WORKER_DEV must be true or false"; exit 1 ;;
+          esac
+          if [[ "$DEPLOY_WORKER" == "true" && -z "$SIGNING_SECRET_NAME" ]]; then
+            echo "::error::Set SLACK_SIGNING_SECRET_SECRET_DEV to the Secret Manager secret name before deploying the assignment worker"
+            exit 1
+          fi
+          SIGNING_SECRET_BINDING=""
+          if [[ -n "$SIGNING_SECRET_NAME" ]]; then
+            if [[ ! "$SIGNING_SECRET_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+              echo "::error::SLACK_SIGNING_SECRET_SECRET_DEV must contain a Secret Manager secret ID"
+              exit 1
+            fi
+            SIGNING_SECRET_BINDING=",SLACK_SIGNING_SECRET=${SIGNING_SECRET_NAME}:latest"
+          fi
+          printf 'SLACK_SIGNING_SECRET_BINDING=%s\n' "$SIGNING_SECRET_BINDING" >> "$GITHUB_ENV"
+
       - name: Configure Docker authentication
         run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
 
@@ -82,7 +105,35 @@ jobs:
             --allow-unauthenticated \
             --service-account "$RUNTIME_SERVICE_ACCOUNT" \
             --set-env-vars "GEMINI_MODEL=${{ vars.GEMINI_MODEL_DEV }},CORS_ALLOWED_ORIGINS=${{ vars.BACKEND_CORS_ALLOWED_ORIGINS_DEV }},SLACK_CLIENT_ID=${{ vars.SLACK_CLIENT_ID_DEV }},SLACK_REDIRECT_URI=${{ vars.SLACK_REDIRECT_URI_DEV }},NOTION_CLIENT_ID=${{ vars.NOTION_CLIENT_ID_DEV }},NOTION_REDIRECT_URI=${{ vars.NOTION_REDIRECT_URI_DEV }},FRONTEND_BASE_URL=${{ vars.FRONTEND_BASE_URL_DEV }},AIBOARD_ALLOWED_SERVICE_ACCOUNT=${{ vars.AIBOARD_ALLOWED_SERVICE_ACCOUNT_DEV }},AIBOARD_EXPECTED_AUDIENCE=${{ vars.AIBOARD_EXPECTED_AUDIENCE_DEV }},AIBOARD_API_BASE_URL=${{ vars.AIBOARD_API_BASE_URL_DEV }},AIBOARD_FRONTEND_BASE_URL=${{ vars.AIBOARD_FRONTEND_BASE_URL_DEV }}" \
-            --set-secrets "GEMINI_API_KEY=${{ vars.GEMINI_API_KEY_SECRET_DEV }}:latest,DATABASE_URL=${{ vars.DATABASE_URL_SECRET_DEV }}:latest,SLACK_CLIENT_SECRET=${{ vars.SLACK_CLIENT_SECRET_SECRET_DEV }}:latest,AIBOARD_API_KEY=${{ vars.AIBOARD_API_KEY_SECRET_DEV }}:latest,NOTION_CLIENT_SECRET=${{ vars.NOTION_CLIENT_SECRET_SECRET_DEV }}:latest" \
+            --set-secrets "GEMINI_API_KEY=${{ vars.GEMINI_API_KEY_SECRET_DEV }}:latest,DATABASE_URL=${{ vars.DATABASE_URL_SECRET_DEV }}:latest,SLACK_CLIENT_SECRET=${{ vars.SLACK_CLIENT_SECRET_SECRET_DEV }}:latest,AIBOARD_API_KEY=${{ vars.AIBOARD_API_KEY_SECRET_DEV }}:latest,NOTION_CLIENT_SECRET=${{ vars.NOTION_CLIENT_SECRET_SECRET_DEV }}:latest${SLACK_SIGNING_SECRET_BINDING}" \
             --set-cloudsql-instances "${{ vars.CLOUD_SQL_INSTANCE_DEV }}" \
             --port 8080 \
+            --quiet
+
+      - name: Deploy task assignment worker pool
+        if: vars.DEPLOY_ASSIGNMENT_WORKER_DEV == 'true'
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID_DEV }}
+          REGION: ${{ vars.GCP_REGION }}
+          WORKER_POOL_NAME: ${{ vars.CLOUD_RUN_ASSIGNMENT_WORKER_POOL_DEV || 'withdev-assignment-dev' }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL_DEV }}
+          GEMINI_SECRET_NAME: ${{ vars.GEMINI_API_KEY_SECRET_DEV }}
+          DATABASE_SECRET_NAME: ${{ vars.DATABASE_URL_SECRET_DEV }}
+          SIGNING_SECRET_NAME: ${{ vars.SLACK_SIGNING_SECRET_SECRET_DEV }}
+          CLOUD_SQL_INSTANCE: ${{ vars.CLOUD_SQL_INSTANCE_DEV }}
+        run: |
+          RUNTIME_SERVICE_ACCOUNT="withdev-backend-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
+          gcloud run worker-pools deploy "$WORKER_POOL_NAME" \
+            --image "$IMAGE" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --service-account "$RUNTIME_SERVICE_ACCOUNT" \
+            --instances 1 \
+            --cpu 1 \
+            --memory 512Mi \
+            --command python \
+            --args=-m,app.workers.task_assignment \
+            --set-env-vars "GEMINI_MODEL=${GEMINI_MODEL}" \
+            --set-secrets "GEMINI_API_KEY=${GEMINI_SECRET_NAME}:latest,DATABASE_URL=${DATABASE_SECRET_NAME}:latest,SLACK_SIGNING_SECRET=${SIGNING_SECRET_NAME}:latest" \
+            --set-cloudsql-instances "$CLOUD_SQL_INSTANCE" \
             --quiet
